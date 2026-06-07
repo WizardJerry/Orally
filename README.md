@@ -168,6 +168,26 @@ bottom of the screen. Press the same hotkey again, or click `停止`, to stop
 recording, transcribe, post-process, and paste the final text back into the
 window that was active when recording started.
 
+The tray menu can also start or stop dictation, pause or resume the hotkey, open
+settings, and quit Orally.
+
+Supported hotkey presets:
+
+- `ctrl-alt-space`
+- `ctrl-shift-space`
+- `alt-space`
+- `f9`
+- `f10`
+- `f11`
+- `f12`
+- `ctrl-alt-f9`
+- `ctrl-alt-f10`
+- `ctrl-alt-f11`
+- `ctrl-alt-f12`
+
+Hotkey changes are read when Orally starts, so restart the app after saving a new
+hotkey.
+
 The settings UI can edit:
 
 - API provider preset, base URL, model, protocol, API key, API key environment
@@ -179,6 +199,32 @@ The settings UI can edit:
 Saving writes the same local config used by the CLI, usually
 `%APPDATA%\Orally\config.toml` on Windows. Leave the API Key field blank to use
 only an environment variable reference.
+
+## Portable Windows App
+
+Orally supports a portable mode without registering as a Windows input method.
+If a `config.toml` file exists beside `Orally.exe`, Orally reads that file before
+falling back to `%APPDATA%\Orally\config.toml`.
+
+Build a portable folder:
+
+```powershell
+.\scripts\package-portable.ps1
+```
+
+The script writes:
+
+```text
+dist\portable\Orally\Orally.exe
+dist\portable\Orally\config.toml
+```
+
+Run `Orally.exe` from that folder to keep settings local to the portable
+directory. You can also create the same executable-directory config from the CLI:
+
+```powershell
+cargo run -p orally-cli -- config init --provider dashscope --portable
+```
 
 ## Direction
 

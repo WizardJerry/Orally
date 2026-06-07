@@ -22,6 +22,8 @@ This repository is prepared for later codegraph-based structure tracking.
 - `apps/orally-desktop/ui/` contains the Material-style settings frontend.
 - `apps/orally-desktop/ui/overlay.html` contains the bottom dictation prompt and
   stop button.
+- `scripts/package-portable.ps1` builds the release desktop app and assembles a
+  portable Windows folder with executable-directory `config.toml`.
 - `apps/windows-ime/src/lib.rs` contains the placeholder Windows TSF DLL exports.
 - `product/` contains product definition and implementation planning.
 
@@ -52,12 +54,17 @@ When codegraph tooling is available in the active session, use it to record:
 - `ProviderPreset`
 - `set_value`
 - `get_config_path`
+- `portable_config_path`
+- `existing_portable_config_path`
+- `init_portable_config`
 - `get_config`
 - `save_config`
 - `stop_recording`
+- `enable_portable_config`
 - `build_tray`
 - `show_settings`
 - `start_dictation_service`
+- `load_hotkey`
 - `run_dictation_processor`
 - `finish_dictation`
 - `show_recording_overlay`

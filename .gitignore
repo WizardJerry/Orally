@@ -1,6 +1,7 @@
 # Rust build artifacts
 /target/
 /target*/
+/dist/
 
 # Tauri generated schemas/build metadata
 apps/*/src-tauri/gen/

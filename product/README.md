@@ -62,6 +62,11 @@ active, Orally shows a compact bottom overlay with a recording indicator and a
 mouse-click stop button, while preserving the original target window for final
 text insertion.
 
+For the first portable Windows build, Orally stays a normal background tray app
+rather than registering as an input method. Portable mode is activated by placing
+`config.toml` beside `Orally.exe`; this keeps API settings, hotkey presets, and
+output behavior local to the portable folder.
+
 ## Differentiation
 
 Compared with closed dictation tools, Orally should focus on:

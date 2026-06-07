@@ -29,7 +29,9 @@ struct DictationController {
 
 #[derive(Debug, Clone, Copy)]
 enum DictationCommand {
-    Toggle,
+    ToggleFromHotkey,
+    ToggleFromUi,
+    TogglePause,
 }
 
 struct ActiveRecording {
@@ -84,12 +86,24 @@ fn save_config(config: AppConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_portable_config_path() -> Result<Option<String>, String> {
+    Ok(orally_config::portable_config_path().map(|path| path.display().to_string()))
+}
+
+#[tauri::command]
+fn enable_portable_config(config: AppConfig) -> Result<String, String> {
+    orally_config::init_portable_config(&config, true)
+        .map(|path| path.display().to_string())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn stop_recording(state: State<'_, DictationController>) -> Result<(), String> {
     state
         .sender
         .lock()
         .map_err(|error| error.to_string())?
-        .send(DictationCommand::Toggle)
+        .send(DictationCommand::ToggleFromUi)
         .map_err(|error| error.to_string())
 }
 
@@ -100,16 +114,36 @@ fn show_settings(app: &AppHandle) {
     }
 }
 
-fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
+fn build_tray(app: &mut tauri::App, sender: mpsc::Sender<DictationCommand>) -> tauri::Result<()> {
+    let toggle = MenuItem::with_id(
+        app,
+        "toggle-dictation",
+        "Start/Stop Dictation",
+        true,
+        None::<&str>,
+    )?;
+    let pause = MenuItem::with_id(
+        app,
+        "toggle-pause",
+        "Pause/Resume Hotkey",
+        true,
+        None::<&str>,
+    )?;
     let show = MenuItem::with_id(app, "show", "Open Settings", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Orally", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let menu = Menu::with_items(app, &[&toggle, &pause, &show, &quit])?;
 
     let mut tray = TrayIconBuilder::with_id("orally-main")
         .tooltip("Orally")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id.as_ref() {
+        .on_menu_event(move |app, event| match event.id.as_ref() {
+            "toggle-dictation" => {
+                let _ = sender.send(DictationCommand::ToggleFromUi);
+            }
+            "toggle-pause" => {
+                let _ = sender.send(DictationCommand::TogglePause);
+            }
             "show" => show_settings(app),
             "quit" => app.exit(0),
             _ => {}
@@ -137,11 +171,13 @@ fn start_dictation_service(app: AppHandle) -> DictationController {
     let (sender, receiver) = mpsc::channel::<DictationCommand>();
     let hotkey_sender = sender.clone();
     let hotkey_app = app.clone();
+    let hotkey = load_hotkey();
+    let hotkey_label = hotkey.label();
 
     thread::spawn(move || {
-        if let Err(error) = run_hotkey_loop(Hotkey::ctrl_alt_space(), |_| {
+        if let Err(error) = run_hotkey_loop(hotkey, |_| {
             hotkey_sender
-                .send(DictationCommand::Toggle)
+                .send(DictationCommand::ToggleFromHotkey)
                 .map_err(|error| OrallyError::Insertion(error.to_string()))
         }) {
             show_transient_overlay(
@@ -153,19 +189,50 @@ fn start_dictation_service(app: AppHandle) -> DictationController {
         }
     });
 
-    thread::spawn(move || run_dictation_processor(app, receiver));
+    thread::spawn(move || run_dictation_processor(app, receiver, hotkey_label));
 
     DictationController {
         sender: Mutex::new(sender),
     }
 }
 
-fn run_dictation_processor(app: AppHandle, receiver: mpsc::Receiver<DictationCommand>) {
+fn load_hotkey() -> Hotkey {
+    orally_config::load_or_default()
+        .ok()
+        .and_then(|config| Hotkey::from_preset(&config.hotkey.preset))
+        .unwrap_or_else(Hotkey::ctrl_alt_space)
+}
+
+fn run_dictation_processor(
+    app: AppHandle,
+    receiver: mpsc::Receiver<DictationCommand>,
+    hotkey_label: String,
+) {
     let mut recording: Option<ActiveRecording> = None;
+    let mut paused = false;
 
     while let Ok(command) = receiver.recv() {
         match command {
-            DictationCommand::Toggle => {
+            DictationCommand::TogglePause => {
+                paused = !paused;
+                if paused {
+                    show_transient_overlay(
+                        &app,
+                        "热键已暂停",
+                        "托盘菜单仍可手动开始或停止语音输入",
+                        Duration::from_secs(3),
+                    );
+                } else {
+                    show_transient_overlay(
+                        &app,
+                        "热键已恢复",
+                        &format!("当前热键：{hotkey_label}"),
+                        Duration::from_secs(3),
+                    );
+                }
+            }
+            DictationCommand::ToggleFromHotkey if paused => {}
+            DictationCommand::ToggleFromHotkey | DictationCommand::ToggleFromUi => {
                 if let Some(active) = recording.take() {
                     hide_overlay(&app);
                     if let Err(error) = finish_dictation(&app, active) {
@@ -184,7 +251,7 @@ fn run_dictation_processor(app: AppHandle, receiver: mpsc::Receiver<DictationCom
                                 session,
                                 target: capture_foreground_window(),
                             });
-                            show_recording_overlay(&app);
+                            show_recording_overlay(&app, &hotkey_label);
                         }
                         Err(error) => show_transient_overlay(
                             &app,
@@ -216,7 +283,7 @@ fn finish_dictation(app: &AppHandle, active: ActiveRecording) -> Result<(), Oral
     });
     inserter.insert(&text, InsertMode::ClipboardFallback)?;
 
-    hide_overlay(app);
+    show_transient_overlay(app, "已插入文本", "语音输入完成", Duration::from_secs(2));
     Ok(())
 }
 
@@ -333,12 +400,12 @@ fn default_dictionary() -> Vec<DictionaryTerm> {
     ]
 }
 
-fn show_recording_overlay(app: &AppHandle) {
+fn show_recording_overlay(app: &AppHandle, hotkey_label: &str) {
     show_overlay(
         app,
         OverlayStatus {
             title: "正在语音输入".to_string(),
-            detail: "按 Ctrl + Alt + Space 或点击停止".to_string(),
+            detail: format!("按 {hotkey_label} 或点击停止"),
             can_stop: true,
         },
     );
@@ -437,8 +504,13 @@ fn restore_foreground_window(_target: Option<ForegroundWindow>) {}
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
-            build_tray(app)?;
             let controller = start_dictation_service(app.handle().clone());
+            let tray_sender = controller
+                .sender
+                .lock()
+                .expect("dictation sender mutex should not be poisoned")
+                .clone();
+            build_tray(app, tray_sender)?;
             app.manage(controller);
             Ok(())
         })
@@ -454,6 +526,8 @@ fn main() {
             get_config_path,
             get_config,
             save_config,
+            get_portable_config_path,
+            enable_portable_config,
             stop_recording
         ])
         .run(tauri::generate_context!())

@@ -223,7 +223,7 @@ fn run_config(args: &[String]) {
         Some("init") => run_config_init(&args[1..]),
         Some("set") => run_config_set(&args[1..]),
         _ => {
-            eprintln!("Usage: config path | config show | config init [--provider dashscope|openrouter|openai] [--force] | config set <key> <value>");
+            eprintln!("Usage: config path | config show | config init [--provider dashscope|openrouter|openai] [--portable] [--force] | config set <key> <value>");
             std::process::exit(2);
         }
     }
@@ -259,6 +259,7 @@ fn run_config_set(args: &[String]) {
 fn run_config_init(args: &[String]) {
     let mut preset = ProviderPreset::DashScope;
     let mut force = false;
+    let mut portable = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -275,6 +276,7 @@ fn run_config_init(args: &[String]) {
                 });
             }
             "--force" | "-f" => force = true,
+            "--portable" => portable = true,
             other => {
                 eprintln!("unknown config init option: {other}");
                 std::process::exit(2);
@@ -285,7 +287,12 @@ fn run_config_init(args: &[String]) {
     }
 
     let config = preset.config();
-    match orally_config::init_config(&config, force) {
+    let result = if portable {
+        orally_config::init_portable_config(&config, force)
+    } else {
+        orally_config::init_config(&config, force)
+    };
+    match result {
         Ok(path) => {
             println!("Wrote {}", path.display());
             println!("Set API key in PowerShell:");
@@ -473,6 +480,7 @@ fn print_help() {
     println!("  cargo run -p orally-cli -- dictate --seconds 3 --insert --paste-delay-ms 1200");
     println!("  cargo run -p orally-cli -- listen --paste-delay-ms 300");
     println!("  cargo run -p orally-cli -- config init --provider dashscope");
+    println!("  cargo run -p orally-cli -- config init --provider dashscope --portable");
     println!("  cargo run -p orally-cli -- config set output.paste_delay_ms 300");
     println!("  cargo run -p orally-cli -- config show");
     println!();

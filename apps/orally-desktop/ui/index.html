@@ -80,6 +80,16 @@
               热键
               <select id="hotkey-preset">
                 <option value="ctrl-alt-space">Ctrl + Alt + Space</option>
+                <option value="ctrl-shift-space">Ctrl + Shift + Space</option>
+                <option value="alt-space">Alt + Space</option>
+                <option value="f9">F9</option>
+                <option value="f10">F10</option>
+                <option value="f11">F11</option>
+                <option value="f12">F12</option>
+                <option value="ctrl-alt-f9">Ctrl + Alt + F9</option>
+                <option value="ctrl-alt-f10">Ctrl + Alt + F10</option>
+                <option value="ctrl-alt-f11">Ctrl + Alt + F11</option>
+                <option value="ctrl-alt-f12">Ctrl + Alt + F12</option>
               </select>
             </label>
             <label>
@@ -127,6 +137,13 @@
             <div>
               <strong>配置文件</strong>
               <span id="config-path-detail">读取中...</span>
+            </div>
+            <div>
+              <strong>Portable 配置</strong>
+              <span id="portable-config-path">读取中...</span>
+              <button id="enable-portable" class="tonal inline-action" type="button">
+                使用程序同目录 config.toml
+              </button>
             </div>
             <div>
               <strong>音频</strong>

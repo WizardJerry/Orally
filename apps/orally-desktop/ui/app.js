@@ -22,6 +22,7 @@ const fields = {
 const status = document.querySelector("#status");
 const configPath = document.querySelector("#config-path");
 const configPathDetail = document.querySelector("#config-path-detail");
+const portableConfigPath = document.querySelector("#portable-config-path");
 
 let currentConfig = null;
 
@@ -109,12 +110,14 @@ function collectForm() {
 
 async function loadConfig() {
   try {
-    const [path, config] = await Promise.all([
+    const [path, portablePath, config] = await Promise.all([
       invoke("get_config_path"),
+      invoke("get_portable_config_path"),
       invoke("get_config"),
     ]);
     configPath.textContent = path;
     configPathDetail.textContent = path;
+    portableConfigPath.textContent = portablePath ?? "当前平台无法确定 portable 配置路径";
     fillForm(config);
     setStatus("配置已载入");
   } catch (error) {
@@ -125,7 +128,19 @@ async function loadConfig() {
 async function saveConfig() {
   try {
     await invoke("save_config", { config: collectForm() });
-    setStatus("配置已保存");
+    setStatus("配置已保存；热键变更将在重启 Orally 后生效");
+  } catch (error) {
+    setStatus(String(error), true);
+  }
+}
+
+async function enablePortableConfig() {
+  try {
+    const path = await invoke("enable_portable_config", { config: collectForm() });
+    configPath.textContent = path;
+    configPathDetail.textContent = path;
+    portableConfigPath.textContent = path;
+    setStatus("已启用 portable 配置；重启 Orally 后优先读取同目录 config.toml");
   } catch (error) {
     setStatus(String(error), true);
   }
@@ -143,5 +158,6 @@ document.querySelectorAll(".tab").forEach((tab) => {
 fields.providerPreset.addEventListener("change", () => applyPreset(fields.providerPreset.value));
 document.querySelector("#reload").addEventListener("click", loadConfig);
 document.querySelector("#save").addEventListener("click", saveConfig);
+document.querySelector("#enable-portable").addEventListener("click", enablePortableConfig);
 
 await loadConfig();

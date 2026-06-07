@@ -130,6 +130,12 @@ button.tonal {
   font-weight: 650;
 }
 
+button.inline-action {
+  justify-self: start;
+  min-width: 0;
+  margin-top: 4px;
+}
+
 button.filled {
   color: var(--on-primary);
   background: var(--primary);

@@ -145,6 +145,16 @@ mouse-click stop button. Because clicking the overlay moves focus away from the
 target app, the tray process records the foreground window at recording start
 and restores it before clipboard paste insertion.
 
+The tray app supports a portable layout. If `config.toml` exists beside the
+running executable, Orally uses it before the normal user config path. This lets
+the Windows portable build run as a background app without registering as an
+input method and without writing settings into `%APPDATA%`.
+
+The first hotkey customization surface is preset-based. The selected preset is
+stored in `[hotkey].preset`, read when the tray process starts, and used for the
+global Win32 hotkey registration. Changing the preset requires restarting the
+tray app.
+
 ## Windows IME Direction
 
 The formal Windows input method should use Text Services Framework (TSF). The

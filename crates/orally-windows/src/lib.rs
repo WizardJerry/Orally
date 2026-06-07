@@ -51,6 +51,72 @@ impl Hotkey {
             key: VirtualKey::Space,
         }
     }
+
+    pub fn from_preset(value: &str) -> Option<Self> {
+        match value {
+            "ctrl-alt-space" => Some(Self::ctrl_alt_space()),
+            "ctrl-shift-space" => Some(Self {
+                modifiers: HotkeyModifiers {
+                    ctrl: true,
+                    shift: true,
+                    ..HotkeyModifiers::default()
+                },
+                key: VirtualKey::Space,
+            }),
+            "alt-space" => Some(Self {
+                modifiers: HotkeyModifiers {
+                    alt: true,
+                    ..HotkeyModifiers::default()
+                },
+                key: VirtualKey::Space,
+            }),
+            "f9" => Some(Self::function_key(VirtualKey::F9)),
+            "f10" => Some(Self::function_key(VirtualKey::F10)),
+            "f11" => Some(Self::function_key(VirtualKey::F11)),
+            "f12" => Some(Self::function_key(VirtualKey::F12)),
+            "ctrl-alt-f9" => Some(Self::ctrl_alt_function_key(VirtualKey::F9)),
+            "ctrl-alt-f10" => Some(Self::ctrl_alt_function_key(VirtualKey::F10)),
+            "ctrl-alt-f11" => Some(Self::ctrl_alt_function_key(VirtualKey::F11)),
+            "ctrl-alt-f12" => Some(Self::ctrl_alt_function_key(VirtualKey::F12)),
+            _ => None,
+        }
+    }
+
+    pub fn label(&self) -> String {
+        let mut parts = Vec::new();
+        if self.modifiers.ctrl {
+            parts.push("Ctrl");
+        }
+        if self.modifiers.alt {
+            parts.push("Alt");
+        }
+        if self.modifiers.shift {
+            parts.push("Shift");
+        }
+        if self.modifiers.win {
+            parts.push("Win");
+        }
+        parts.push(self.key.label());
+        parts.join(" + ")
+    }
+
+    fn function_key(key: VirtualKey) -> Self {
+        Self {
+            modifiers: HotkeyModifiers::default(),
+            key,
+        }
+    }
+
+    fn ctrl_alt_function_key(key: VirtualKey) -> Self {
+        Self {
+            modifiers: HotkeyModifiers {
+                ctrl: true,
+                alt: true,
+                ..HotkeyModifiers::default()
+            },
+            key,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -68,6 +134,18 @@ pub enum VirtualKey {
     F10,
     F11,
     F12,
+}
+
+impl VirtualKey {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Space => "Space",
+            Self::F9 => "F9",
+            Self::F10 => "F10",
+            Self::F11 => "F11",
+            Self::F12 => "F12",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,5 +380,27 @@ mod platform {
         Err(OrallyError::Insertion(
             "Windows hotkey listening is only available on Windows".to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_hotkey_presets() {
+        assert_eq!(
+            Hotkey::from_preset("ctrl-alt-space").map(|hotkey| hotkey.label()),
+            Some("Ctrl + Alt + Space".to_string())
+        );
+        assert_eq!(
+            Hotkey::from_preset("ctrl-alt-f9").map(|hotkey| hotkey.label()),
+            Some("Ctrl + Alt + F9".to_string())
+        );
+        assert_eq!(
+            Hotkey::from_preset("f12").map(|hotkey| hotkey.label()),
+            Some("F12".to_string())
+        );
+        assert!(Hotkey::from_preset("ctrl-f13").is_none());
     }
 }

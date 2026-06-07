@@ -242,6 +242,10 @@ pub fn config_path() -> Result<PathBuf, ConfigError> {
         return Ok(PathBuf::from(path));
     }
 
+    if let Some(path) = existing_portable_config_path() {
+        return Ok(path);
+    }
+
     if let Ok(appdata) = env::var("APPDATA") {
         return Ok(PathBuf::from(appdata).join("Orally").join("config.toml"));
     }
@@ -254,6 +258,26 @@ pub fn config_path() -> Result<PathBuf, ConfigError> {
     }
 
     Err(ConfigError::MissingConfigDir)
+}
+
+pub fn portable_config_path() -> Option<PathBuf> {
+    env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.join("config.toml")))
+}
+
+pub fn existing_portable_config_path() -> Option<PathBuf> {
+    portable_config_path().filter(|path| path.exists())
+}
+
+pub fn init_portable_config(config: &AppConfig, force: bool) -> Result<PathBuf, ConfigError> {
+    let path = portable_config_path().ok_or(ConfigError::MissingConfigDir)?;
+    if path.exists() && !force {
+        return Err(ConfigError::AlreadyExists(path));
+    }
+
+    save_to_path(path.clone(), config)?;
+    Ok(path)
 }
 
 pub fn load_or_default() -> Result<AppConfig, ConfigError> {
@@ -375,5 +399,15 @@ mod tests {
         assert_eq!(config.asr.model, "qwen3-asr-flash");
         assert!(config.output.insert);
         assert_eq!(config.asr.language, None);
+    }
+
+    #[test]
+    fn portable_config_path_uses_current_exe_dir() {
+        let path = portable_config_path().expect("current exe path should be available");
+
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("config.toml")
+        );
     }
 }

@@ -19,6 +19,11 @@
 - Completed: initial Tauri desktop settings shell with Windows tray icon.
 - Completed: tray-owned Windows dictation hotkey with bottom overlay and stop
   button.
+- Completed: portable Windows app layout using executable-directory
+  `config.toml`.
+- Completed: configurable Windows hotkey presets loaded from local config.
+- Completed: tray menu controls for start/stop dictation and pause/resume
+  hotkey.
 
 ## Phase 1: Useful Desktop MVP
 
@@ -33,6 +38,8 @@
 - Completed: settings UI backed by the local configuration file.
 - Completed: tray-resident Windows dictation loop using the existing same-key
   start/stop hotkey path.
+- Completed: portable package script for tray-app mode without IME
+  registration.
 - TSF text service COM class factory and per-user registration scripts.
 
 ## Phase 2: Android IME
