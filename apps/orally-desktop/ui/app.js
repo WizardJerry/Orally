@@ -8,15 +8,27 @@ const fields = {
   apiKeyEnv: document.querySelector("#asr-api-key-env"),
   language: document.querySelector("#asr-language"),
   prompt: document.querySelector("#asr-prompt"),
+  postprocessMode: document.querySelector("#postprocess-mode"),
+  postprocessBaseUrl: document.querySelector("#postprocess-base-url"),
+  postprocessModel: document.querySelector("#postprocess-model"),
+  postprocessApiKey: document.querySelector("#postprocess-api-key"),
+  postprocessApiKeyEnv: document.querySelector("#postprocess-api-key-env"),
+  postprocessSystemPrompt: document.querySelector("#postprocess-system-prompt"),
+  postprocessUserTemplate: document.querySelector("#postprocess-user-template"),
   locale: document.querySelector("#output-locale"),
   raw: document.querySelector("#output-raw"),
   showChanges: document.querySelector("#output-show-changes"),
   insert: document.querySelector("#output-insert"),
   pasteDelayMs: document.querySelector("#output-paste-delay-ms"),
+  restoreClipboard: document.querySelector("#output-restore-clipboard"),
+  restoreClipboardDelayMs: document.querySelector("#output-restore-clipboard-delay-ms"),
   dictateSeconds: document.querySelector("#audio-dictate-seconds"),
   recordOutput: null,
   hotkeyPreset: document.querySelector("#hotkey-preset"),
   providerPreset: document.querySelector("#provider-preset"),
+  allowExternalRequests: document.querySelector("#privacy-allow-external-requests"),
+  historyEnabled: document.querySelector("#privacy-history-enabled"),
+  historyPath: document.querySelector("#privacy-history-path"),
 };
 
 const status = document.querySelector("#status");
@@ -71,13 +83,25 @@ function fillForm(config) {
   fields.apiKeyEnv.value = config.asr.api_key_env;
   fields.language.value = config.asr.language ?? "";
   fields.prompt.value = config.asr.prompt ?? "";
+  fields.postprocessMode.value = config.postprocess?.mode ?? "builtin";
+  fields.postprocessBaseUrl.value = config.postprocess?.base_url ?? "https://api.openai.com/v1";
+  fields.postprocessModel.value = config.postprocess?.model ?? "";
+  fields.postprocessApiKey.value = config.postprocess?.api_key ?? "";
+  fields.postprocessApiKeyEnv.value = config.postprocess?.api_key_env ?? "ORALLY_LLM_API_KEY";
+  fields.postprocessSystemPrompt.value = config.postprocess?.system_prompt ?? "";
+  fields.postprocessUserTemplate.value = config.postprocess?.user_template ?? "";
   fields.locale.value = config.output.locale;
   fields.raw.checked = config.output.raw;
   fields.showChanges.checked = config.output.show_changes;
   fields.insert.checked = config.output.insert;
   fields.pasteDelayMs.value = config.output.paste_delay_ms;
+  fields.restoreClipboard.checked = config.output.restore_clipboard ?? true;
+  fields.restoreClipboardDelayMs.value = config.output.restore_clipboard_delay_ms ?? 250;
   fields.dictateSeconds.value = config.audio.dictate_seconds;
   fields.hotkeyPreset.value = config.hotkey.preset;
+  fields.allowExternalRequests.checked = config.privacy?.allow_external_requests ?? true;
+  fields.historyEnabled.checked = config.privacy?.history_enabled ?? true;
+  fields.historyPath.value = config.privacy?.history_path ?? "";
 }
 
 function collectForm() {
@@ -91,12 +115,23 @@ function collectForm() {
       language: optional(fields.language.value),
       prompt: optional(fields.prompt.value),
     },
+    postprocess: {
+      mode: fields.postprocessMode.value,
+      base_url: fields.postprocessBaseUrl.value.trim(),
+      model: fields.postprocessModel.value.trim(),
+      api_key: optional(fields.postprocessApiKey.value),
+      api_key_env: fields.postprocessApiKeyEnv.value.trim(),
+      system_prompt: fields.postprocessSystemPrompt.value.trim(),
+      user_template: fields.postprocessUserTemplate.value.trim(),
+    },
     output: {
       locale: fields.locale.value.trim() || "zh-CN",
       raw: fields.raw.checked,
       show_changes: fields.showChanges.checked,
       insert: fields.insert.checked,
       paste_delay_ms: Number(fields.pasteDelayMs.value || 0),
+      restore_clipboard: fields.restoreClipboard.checked,
+      restore_clipboard_delay_ms: Number(fields.restoreClipboardDelayMs.value || 250),
     },
     audio: {
       dictate_seconds: Number(fields.dictateSeconds.value || 3),
@@ -104,6 +139,11 @@ function collectForm() {
     },
     hotkey: {
       preset: fields.hotkeyPreset.value,
+    },
+    privacy: {
+      allow_external_requests: fields.allowExternalRequests.checked,
+      history_enabled: fields.historyEnabled.checked,
+      history_path: optional(fields.historyPath.value),
     },
   };
 }

@@ -5,12 +5,16 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowsPasteConfig {
     pub paste_delay: Duration,
+    pub restore_clipboard: bool,
+    pub restore_clipboard_delay: Duration,
 }
 
 impl Default for WindowsPasteConfig {
     fn default() -> Self {
         Self {
             paste_delay: Duration::from_millis(750),
+            restore_clipboard: true,
+            restore_clipboard_delay: Duration::from_millis(250),
         }
     }
 }
@@ -29,7 +33,11 @@ impl WindowsClipboardPasteInserter {
 impl TextInserter for WindowsClipboardPasteInserter {
     fn insert(&self, text: &str, _mode: InsertMode) -> Result<(), OrallyError> {
         thread::sleep(self.config.paste_delay);
-        platform::paste_text(text)
+        platform::paste_text(
+            text,
+            self.config.restore_clipboard,
+            self.config.restore_clipboard_delay,
+        )
     }
 }
 
@@ -166,12 +174,16 @@ mod platform {
     use orally_core::OrallyError;
     use std::mem::size_of;
     use std::ptr::{copy_nonoverlapping, null_mut};
+    use std::slice;
+    use std::thread;
+    use std::time::Duration;
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+        CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
+        OpenClipboard, SetClipboardData,
     };
     use windows_sys::Win32::System::Memory::{
-        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+        GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
     };
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -184,9 +196,26 @@ mod platform {
 
     const ORALLY_HOTKEY_ID: i32 = 1;
 
-    pub fn paste_text(text: &str) -> Result<(), OrallyError> {
+    pub fn paste_text(
+        text: &str,
+        restore_clipboard: bool,
+        restore_delay: Duration,
+    ) -> Result<(), OrallyError> {
+        let previous = if restore_clipboard {
+            clipboard_text().ok().flatten()
+        } else {
+            None
+        };
+
         set_clipboard_text(text)?;
-        send_ctrl_v()
+        send_ctrl_v()?;
+
+        if restore_clipboard {
+            thread::sleep(restore_delay);
+            restore_clipboard_text(previous)?;
+        }
+
+        Ok(())
     }
 
     pub fn run_hotkey_loop(
@@ -270,6 +299,69 @@ mod platform {
         }
 
         Ok(())
+    }
+
+    fn restore_clipboard_text(text: Option<String>) -> Result<(), OrallyError> {
+        match text {
+            Some(text) => set_clipboard_text(&text),
+            None => clear_clipboard(),
+        }
+    }
+
+    fn clear_clipboard() -> Result<(), OrallyError> {
+        unsafe {
+            if OpenClipboard(null_mut()) == 0 {
+                return Err(OrallyError::Insertion(
+                    "OpenClipboard failed while clearing clipboard".to_string(),
+                ));
+            }
+
+            let _guard = ClipboardGuard;
+            if EmptyClipboard() == 0 {
+                return Err(OrallyError::Insertion("EmptyClipboard failed".to_string()));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn clipboard_text() -> Result<Option<String>, OrallyError> {
+        unsafe {
+            if IsClipboardFormatAvailable(u32::from(CF_UNICODETEXT)) == 0 {
+                return Ok(None);
+            }
+
+            if OpenClipboard(null_mut()) == 0 {
+                return Err(OrallyError::Insertion(
+                    "OpenClipboard failed while reading clipboard".to_string(),
+                ));
+            }
+
+            let _guard = ClipboardGuard;
+            let handle = GetClipboardData(u32::from(CF_UNICODETEXT));
+            if handle.is_null() {
+                return Ok(None);
+            }
+
+            let locked = GlobalLock(handle);
+            if locked.is_null() {
+                return Err(OrallyError::Insertion(
+                    "GlobalLock failed while reading clipboard".to_string(),
+                ));
+            }
+
+            let byte_len = GlobalSize(handle);
+            let u16_len = byte_len / size_of::<u16>();
+            let data = slice::from_raw_parts(locked.cast::<u16>(), u16_len);
+            let nul = data
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(data.len());
+            let text = String::from_utf16_lossy(&data[..nul]);
+            GlobalUnlock(handle);
+
+            Ok(Some(text))
+        }
     }
 
     fn send_ctrl_v() -> Result<(), OrallyError> {
@@ -366,8 +458,13 @@ mod platform {
 mod platform {
     use super::{Hotkey, HotkeyEvent};
     use orally_core::OrallyError;
+    use std::time::Duration;
 
-    pub fn paste_text(_text: &str) -> Result<(), OrallyError> {
+    pub fn paste_text(
+        _text: &str,
+        _restore_clipboard: bool,
+        _restore_delay: Duration,
+    ) -> Result<(), OrallyError> {
         Err(OrallyError::Insertion(
             "Windows clipboard paste insertion is only available on Windows".to_string(),
         ))

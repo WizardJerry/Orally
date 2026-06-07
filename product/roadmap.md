@@ -24,6 +24,9 @@
 - Completed: configurable Windows hotkey presets loaded from local config.
 - Completed: tray menu controls for start/stop dictation and pause/resume
   hotkey.
+- Completed: OpenAI-compatible AI post-processing provider.
+- Completed: local JSONL history with privacy toggles.
+- Completed: text clipboard restoration after paste.
 
 ## Phase 1: Useful Desktop MVP
 
@@ -32,14 +35,15 @@
 - Chat-audio ASR provider for OpenRouter and DashScope Qwen ASR.
 - Clipboard fallback insertion.
 - Press-to-talk global hotkey.
-- Local history.
-- OpenAI-compatible LLM post-processing provider.
+- Completed: local history.
+- Completed: OpenAI-compatible LLM post-processing provider.
 - Completed: basic settings UI.
 - Completed: settings UI backed by the local configuration file.
 - Completed: tray-resident Windows dictation loop using the existing same-key
   start/stop hotkey path.
 - Completed: portable package script for tray-app mode without IME
   registration.
+- Completed: privacy switches for external requests and local history.
 - TSF text service COM class factory and per-user registration scripts.
 
 ## Phase 2: Android IME

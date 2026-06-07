@@ -14,6 +14,8 @@ orally-asr = { path = "../../../crates/orally-asr" }
 orally-audio = { path = "../../../crates/orally-audio" }
 orally-config = { path = "../../../crates/orally-config" }
 orally-core = { path = "../../../crates/orally-core" }
+orally-llm = { path = "../../../crates/orally-llm" }
+orally-storage = { path = "../../../crates/orally-storage" }
 orally-windows = { path = "../../../crates/orally-windows" }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.10.1", features = ["tray-icon"] }

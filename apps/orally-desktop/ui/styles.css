@@ -223,6 +223,10 @@ textarea:focus {
   max-width: 620px;
 }
 
+.switch-row.embedded {
+  margin-top: 8px;
+}
+
 .privacy-list {
   display: grid;
   gap: 12px;

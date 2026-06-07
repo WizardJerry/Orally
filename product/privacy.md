@@ -26,6 +26,19 @@ The current CLI configuration stores only the API key environment variable name,
 not the secret value. This keeps early configuration files safe enough for local
 sync experiments while leaving room for platform keychain integration later.
 
+## Current Desktop Controls
+
+- `privacy.allow_external_requests`: when false, the desktop dictation flow
+  blocks remote ASR and AI post-processing calls.
+- `privacy.history_enabled`: when true, Orally stores local JSONL history beside
+  the active config file unless `privacy.history_path` is set.
+- `output.restore_clipboard`: when true, Orally restores the previous text
+  clipboard after paste so generated dictation text does not remain in the
+  clipboard.
+
+The current clipboard restoration preserves prior text clipboard content. Full
+preservation of images, files, and rich clipboard formats remains future work.
+
 ## Permissions
 
 | Permission | Required | Reason |

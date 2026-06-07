@@ -2299,11 +2299,32 @@ dependencies = [
  "orally-audio",
  "orally-config",
  "orally-core",
+ "orally-llm",
+ "orally-storage",
  "orally-windows",
  "serde",
  "tauri",
  "tauri-build",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "orally-llm"
+version = "0.1.0"
+dependencies = [
+ "orally-core",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "orally-storage"
+version = "0.1.0"
+dependencies = [
+ "orally-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

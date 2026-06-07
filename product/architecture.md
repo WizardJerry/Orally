@@ -19,9 +19,9 @@ crates/
   orally-audio/      microphone capture, VAD metrics, WAV encoding
   orally-asr/        OpenAI-compatible ASR provider
   orally-config/     local TOML configuration
+  orally-llm/        OpenAI-compatible AI post-processing provider
+  orally-storage/    local JSONL history
   orally-windows/    Windows clipboard paste insertion prototype
-  orally-llm/        future post-processing providers
-  orally-storage/    future SQLite, key references, history
   orally-sync/       future WebDAV/folder sync
 apps/
   orally-cli/        current prototype runner
@@ -52,6 +52,15 @@ The core crate currently defines these important traits:
 
 This keeps the first prototype small while leaving room for local Whisper,
 OpenAI-compatible ASR, custom LLM providers, and OS-specific insertion engines.
+
+## AI Post-Processing
+
+`orally-llm` implements the first AI post-processing provider using an
+OpenAI-compatible chat completions endpoint. The desktop app selects it when
+`[postprocess].mode` is `llm` or `ai`; otherwise it uses the built-in local
+cleaner. The LLM prompt is configured through `[postprocess].system_prompt` and
+`[postprocess].user_template`, with `{{transcript}}` and `{{locale}}`
+placeholders.
 
 ## Audio Input Prototype
 
@@ -115,6 +124,12 @@ cargo run -p orally-cli -- listen --paste-delay-ms 300
 This is a prototype path. A later Windows shell should move the same insertion
 adapter behind a tray app and global press-to-talk hotkey.
 
+The clipboard adapter now restores the previous text clipboard content after
+paste when `output.restore_clipboard` is enabled. This removes the generated
+dictation text from the clipboard after insertion while preserving the previous
+text clipboard value. Full non-text clipboard format preservation is still a
+future improvement.
+
 The current listener registers `Ctrl+Alt+Space` through the Win32 global hotkey
 API and runs in the foreground terminal process. The same hotkey toggles
 recording: first press starts capture, second press stops capture and submits
@@ -154,6 +169,11 @@ The first hotkey customization surface is preset-based. The selected preset is
 stored in `[hotkey].preset`, read when the tray process starts, and used for the
 global Win32 hotkey registration. Changing the preset requires restarting the
 tray app.
+
+The tray process can append local history through `orally-storage`. By default
+history is stored as `history.jsonl` next to the active config file and contains
+the raw ASR text plus the final inserted text. `privacy.history_enabled` disables
+this, and `privacy.allow_external_requests` blocks remote ASR/LLM calls.
 
 ## Windows IME Direction
 

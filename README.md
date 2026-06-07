@@ -117,7 +117,10 @@ Update one config value:
 cargo run -p orally-cli -- config set asr.model qwen3-asr-flash
 cargo run -p orally-cli -- config set asr.api_key "sk-..."
 cargo run -p orally-cli -- config set asr.api_key_env DASHSCOPE_API_KEY
+cargo run -p orally-cli -- config set postprocess.mode llm
+cargo run -p orally-cli -- config set postprocess.model gpt-4o-mini
 cargo run -p orally-cli -- config set output.paste_delay_ms 300
+cargo run -p orally-cli -- config set output.restore_clipboard true
 cargo run -p orally-cli -- config set output.show_changes true
 ```
 
@@ -130,14 +133,26 @@ Common keys:
 - `asr.api_key_env`
 - `asr.language`
 - `asr.prompt`
+- `postprocess.mode`
+- `postprocess.base_url`
+- `postprocess.model`
+- `postprocess.api_key`
+- `postprocess.api_key_env`
+- `postprocess.system_prompt`
+- `postprocess.user_template`
 - `output.locale`
 - `output.raw`
 - `output.show_changes`
 - `output.insert`
 - `output.paste_delay_ms`
+- `output.restore_clipboard`
+- `output.restore_clipboard_delay_ms`
 - `audio.dictate_seconds`
 - `audio.record_output`
 - `hotkey.preset`
+- `privacy.allow_external_requests`
+- `privacy.history_enabled`
+- `privacy.history_path`
 
 For privacy, prefer storing the API key environment variable name and keeping
 the key in your shell or OS environment. For DashScope, set:
@@ -192,13 +207,50 @@ The settings UI can edit:
 
 - API provider preset, base URL, model, protocol, API key, API key environment
   variable, language hint, and ASR prompt.
+- AI post-processing mode, OpenAI-compatible LLM endpoint/model/API key, system
+  prompt, and user template.
 - Hotkey preset, default recording duration, paste delay, output locale, default
-  insert behavior, and change display.
-- Raw transcript mode and privacy/storage notes.
+  insert behavior, change display, and clipboard restoration.
+- Raw transcript mode, external-request privacy switch, and local history.
 
 Saving writes the same local config used by the CLI, usually
 `%APPDATA%\Orally\config.toml` on Windows. Leave the API Key field blank to use
 only an environment variable reference.
+
+## AI Post-Processing
+
+By default Orally uses the built-in local cleaner. Set:
+
+```toml
+[postprocess]
+mode = "llm"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+api_key_env = "ORALLY_LLM_API_KEY"
+```
+
+The AI postprocessor sends the ASR transcript to an OpenAI-compatible
+`/chat/completions` endpoint and expects only the final text in response. Use
+`postprocess.system_prompt` and `postprocess.user_template` to customize the
+cleanup behavior. The user template supports `{{transcript}}` and `{{locale}}`.
+
+Set `output.raw = true` to bypass both built-in and AI post-processing.
+
+## Local History And Clipboard Privacy
+
+If `privacy.history_enabled = true`, Orally appends local JSONL history beside
+the active config file as `history.jsonl`. Each entry stores the raw ASR text and
+the final inserted text. Set `privacy.history_path` to use a custom file, or set
+`privacy.history_enabled = false` to disable history.
+
+Set `privacy.allow_external_requests = false` to block remote ASR and AI
+post-processing requests.
+
+On Windows, Orally uses the clipboard fallback insertion path. When
+`output.restore_clipboard = true`, Orally restores the previous text clipboard
+after paste and removes the generated text from the clipboard. This first
+implementation preserves previous text clipboard content; non-text clipboard
+formats are not restored yet.
 
 ## Portable Windows App
 
@@ -217,6 +269,7 @@ The script writes:
 ```text
 dist\portable\Orally\Orally.exe
 dist\portable\Orally\config.toml
+dist\portable\Orally\config.example.toml
 ```
 
 Run `Orally.exe` from that folder to keep settings local to the portable
@@ -225,6 +278,9 @@ directory. You can also create the same executable-directory config from the CLI
 ```powershell
 cargo run -p orally-cli -- config init --provider dashscope --portable
 ```
+
+The packaging script does not overwrite an existing `config.toml`; it always
+writes the latest `config.example.toml` for reference.
 
 ## Direction
 

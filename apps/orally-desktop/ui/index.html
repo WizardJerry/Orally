@@ -112,14 +112,55 @@
               <span>显示处理变更</span>
               <input id="output-show-changes" type="checkbox" />
             </label>
+            <label class="switch-row">
+              <span>粘贴后恢复剪贴板文本</span>
+              <input id="output-restore-clipboard" type="checkbox" />
+            </label>
+            <label>
+              剪贴板恢复延迟 ms
+              <input id="output-restore-clipboard-delay-ms" type="number" min="0" max="5000" />
+            </label>
           </div>
         </section>
 
         <section id="postprocess" class="panel">
           <h2>后处理</h2>
+          <div class="field-grid">
+            <label>
+              后处理模式
+              <select id="postprocess-mode">
+                <option value="builtin">本地基础清理</option>
+                <option value="llm">AI 后处理</option>
+              </select>
+            </label>
+            <label>
+              LLM Base URL
+              <input id="postprocess-base-url" spellcheck="false" />
+            </label>
+            <label>
+              LLM 模型
+              <input id="postprocess-model" spellcheck="false" />
+            </label>
+            <label>
+              LLM API Key 环境变量
+              <input id="postprocess-api-key-env" spellcheck="false" />
+            </label>
+            <label>
+              LLM API Key
+              <input id="postprocess-api-key" type="password" autocomplete="off" spellcheck="false" />
+            </label>
+          </div>
           <label class="textarea-field">
             ASR Prompt
             <textarea id="asr-prompt" rows="7" placeholder="可选：给 ASR/音频模型的提示词"></textarea>
+          </label>
+          <label class="textarea-field">
+            AI 后处理 System Prompt
+            <textarea id="postprocess-system-prompt" rows="6"></textarea>
+          </label>
+          <label class="textarea-field">
+            AI 后处理 User Template
+            <textarea id="postprocess-user-template" rows="7"></textarea>
           </label>
           <label class="switch-row wide">
             <span>输出原始转写，不做本地后处理</span>
@@ -133,6 +174,23 @@
             <div>
               <strong>API Key</strong>
               <span>可只保存环境变量名称；如果在设置中填写 API Key，则会写入本地配置文件。</span>
+            </div>
+            <div>
+              <strong>外部请求</strong>
+              <span>关闭后会阻止远程 ASR 和 AI 后处理请求。</span>
+              <label class="switch-row embedded">
+                <span>允许外部 AI 请求</span>
+                <input id="privacy-allow-external-requests" type="checkbox" />
+              </label>
+            </div>
+            <div>
+              <strong>本地历史</strong>
+              <span>保存原始识别文本和最终插入文本到本地 JSONL。</span>
+              <label class="switch-row embedded">
+                <span>保存本地历史</span>
+                <input id="privacy-history-enabled" type="checkbox" />
+              </label>
+              <input id="privacy-history-path" placeholder="留空则使用配置目录 history.jsonl" spellcheck="false" />
             </div>
             <div>
               <strong>配置文件</strong>

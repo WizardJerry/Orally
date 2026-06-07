@@ -7,19 +7,29 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
     pub asr: AsrConfig,
+    #[serde(default)]
+    pub postprocess: PostprocessConfig,
+    #[serde(default)]
     pub output: OutputConfig,
+    #[serde(default)]
     pub audio: AudioConfig,
+    #[serde(default)]
     pub hotkey: HotkeyConfig,
+    #[serde(default)]
+    pub privacy: PrivacyConfig,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             asr: AsrConfig::default(),
+            postprocess: PostprocessConfig::default(),
             output: OutputConfig::default(),
             audio: AudioConfig::default(),
             hotkey: HotkeyConfig::default(),
+            privacy: PrivacyConfig::default(),
         }
     }
 }
@@ -42,6 +52,8 @@ impl AppConfig {
                 show_changes: false,
                 insert: false,
                 paste_delay_ms: 300,
+                restore_clipboard: true,
+                restore_clipboard_delay_ms: 250,
             },
             ..Self::default()
         }
@@ -64,6 +76,8 @@ impl AppConfig {
                 show_changes: false,
                 insert: false,
                 paste_delay_ms: 300,
+                restore_clipboard: true,
+                restore_clipboard_delay_ms: 250,
             },
             ..Self::default()
         }
@@ -112,12 +126,42 @@ impl Default for AsrConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostprocessConfig {
+    pub mode: String,
+    pub base_url: String,
+    pub model: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    pub api_key_env: String,
+    pub system_prompt: String,
+    pub user_template: String,
+}
+
+impl Default for PostprocessConfig {
+    fn default() -> Self {
+        Self {
+            mode: "builtin".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: String::new(),
+            api_key: None,
+            api_key_env: "ORALLY_LLM_API_KEY".to_string(),
+            system_prompt: "You are Orally's dictation postprocessor. Clean speech-to-text output while preserving the user's meaning. Return only the final text, with no explanations, markdown, quotes, or labels.".to_string(),
+            user_template: "Locale: {{locale}}\nTranscript:\n{{transcript}}\n\nRewrite the transcript into polished text suitable for direct insertion.".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputConfig {
     pub locale: String,
     pub raw: bool,
     pub show_changes: bool,
     pub insert: bool,
     pub paste_delay_ms: u64,
+    #[serde(default = "default_restore_clipboard")]
+    pub restore_clipboard: bool,
+    #[serde(default = "default_restore_clipboard_delay_ms")]
+    pub restore_clipboard_delay_ms: u64,
 }
 
 impl Default for OutputConfig {
@@ -128,6 +172,8 @@ impl Default for OutputConfig {
             show_changes: false,
             insert: false,
             paste_delay_ms: 750,
+            restore_clipboard: true,
+            restore_clipboard_delay_ms: 250,
         }
     }
 }
@@ -156,6 +202,23 @@ impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             preset: "ctrl-alt-space".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrivacyConfig {
+    pub allow_external_requests: bool,
+    pub history_enabled: bool,
+    pub history_path: Option<String>,
+}
+
+impl Default for PrivacyConfig {
+    fn default() -> Self {
+        Self {
+            allow_external_requests: true,
+            history_enabled: true,
+            history_path: None,
         }
     }
 }
@@ -327,18 +390,42 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<(), C
         "asr.api_key_env" => config.asr.api_key_env = value.to_string(),
         "asr.language" => config.asr.language = optional_string(value),
         "asr.prompt" => config.asr.prompt = optional_string(value),
+        "postprocess.mode" => config.postprocess.mode = value.to_string(),
+        "postprocess.base_url" => config.postprocess.base_url = value.to_string(),
+        "postprocess.model" => config.postprocess.model = value.to_string(),
+        "postprocess.api_key" => config.postprocess.api_key = optional_string(value),
+        "postprocess.api_key_env" => config.postprocess.api_key_env = value.to_string(),
+        "postprocess.system_prompt" => config.postprocess.system_prompt = value.to_string(),
+        "postprocess.user_template" => config.postprocess.user_template = value.to_string(),
         "output.locale" => config.output.locale = value.to_string(),
         "output.raw" => config.output.raw = parse_bool(key, value)?,
         "output.show_changes" => config.output.show_changes = parse_bool(key, value)?,
         "output.insert" => config.output.insert = parse_bool(key, value)?,
         "output.paste_delay_ms" => config.output.paste_delay_ms = parse_u64(key, value)?,
+        "output.restore_clipboard" => config.output.restore_clipboard = parse_bool(key, value)?,
+        "output.restore_clipboard_delay_ms" => {
+            config.output.restore_clipboard_delay_ms = parse_u64(key, value)?
+        }
         "audio.dictate_seconds" => config.audio.dictate_seconds = parse_u64(key, value)?,
         "audio.record_output" => config.audio.record_output = value.to_string(),
         "hotkey.preset" => config.hotkey.preset = value.to_string(),
+        "privacy.allow_external_requests" => {
+            config.privacy.allow_external_requests = parse_bool(key, value)?
+        }
+        "privacy.history_enabled" => config.privacy.history_enabled = parse_bool(key, value)?,
+        "privacy.history_path" => config.privacy.history_path = optional_string(value),
         other => return Err(ConfigError::InvalidKey(other.to_string())),
     }
 
     Ok(())
+}
+
+fn default_restore_clipboard() -> bool {
+    true
+}
+
+fn default_restore_clipboard_delay_ms() -> u64 {
+    250
 }
 
 fn optional_string(value: &str) -> Option<String> {

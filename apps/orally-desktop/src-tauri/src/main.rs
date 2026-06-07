@@ -8,8 +8,10 @@ use orally_audio::CpalRecordingSession;
 use orally_config::AppConfig;
 use orally_core::{
     AppContext, AsrProvider, BuiltInTextProcessor, DictionaryTerm, InsertMode, OrallyError,
-    PostprocessPrompt, ProcessInput, TextInserter, TextProcessor, Transcript,
+    ProcessInput, ProcessedText, TextInserter, TextProcessor, Transcript,
 };
+use orally_llm::{OpenAiChatPostprocessor, OpenAiChatPostprocessorConfig};
+use orally_storage::{default_history_path, HistoryEntry, HistoryStore};
 use orally_windows::{run_hotkey_loop, Hotkey, WindowsClipboardPasteInserter, WindowsPasteConfig};
 use serde::Serialize;
 use std::env;
@@ -272,38 +274,114 @@ fn finish_dictation(app: &AppHandle, active: ActiveRecording) -> Result<(), Oral
     let recorded = active.session.stop()?;
     let config = orally_config::load_or_default()
         .map_err(|error| OrallyError::InvalidInput(error.to_string()))?;
+    if !config.privacy.allow_external_requests {
+        return Err(OrallyError::InvalidInput(
+            "external requests are disabled in privacy settings".to_string(),
+        ));
+    }
+
     let asr_options = AsrOptions::from_config(&config);
     let asr = build_asr_provider(&asr_options)?;
     let transcript = asr.transcribe(recorded.audio)?;
-    let text = final_text(transcript, &config)?;
+    let raw_text = transcript.text.clone();
+    let processed = process_text(transcript, &config)?;
 
     restore_foreground_window(active.target);
     let inserter = WindowsClipboardPasteInserter::new(WindowsPasteConfig {
         paste_delay: Duration::from_millis(config.output.paste_delay_ms),
+        restore_clipboard: config.output.restore_clipboard,
+        restore_clipboard_delay: Duration::from_millis(config.output.restore_clipboard_delay_ms),
     });
-    inserter.insert(&text, InsertMode::ClipboardFallback)?;
+    inserter.insert(&processed.text, InsertMode::ClipboardFallback)?;
 
-    show_transient_overlay(app, "已插入文本", "语音输入完成", Duration::from_secs(2));
+    if let Err(error) = save_history(&config, raw_text, processed.text) {
+        show_transient_overlay(
+            app,
+            "已插入文本",
+            &format!("历史保存失败：{error}"),
+            Duration::from_secs(4),
+        );
+    } else {
+        show_transient_overlay(app, "已插入文本", "语音输入完成", Duration::from_secs(2));
+    }
     Ok(())
 }
 
-fn final_text(transcript: Transcript, config: &AppConfig) -> Result<String, OrallyError> {
+fn process_text(transcript: Transcript, config: &AppConfig) -> Result<ProcessedText, OrallyError> {
     if config.output.raw {
-        return Ok(transcript.text);
+        return Ok(ProcessedText {
+            text: transcript.text,
+            changes: Vec::new(),
+        });
     }
 
-    let processor = BuiltInTextProcessor;
-    processor
-        .process(ProcessInput {
+    if matches!(config.postprocess.mode.as_str(), "llm" | "ai") {
+        let api_key = config
+            .postprocess
+            .api_key
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| env::var(&config.postprocess.api_key_env).ok())
+            .ok_or_else(|| {
+                OrallyError::InvalidInput(format!(
+                    "missing postprocess API key: set postprocess.api_key or env var {}",
+                    config.postprocess.api_key_env
+                ))
+            })?;
+        let mut llm_config = OpenAiChatPostprocessorConfig::new(
+            config.postprocess.base_url.clone(),
+            api_key,
+            config.postprocess.model.clone(),
+        );
+        llm_config.system_prompt = config.postprocess.system_prompt.clone();
+        llm_config.user_template = config.postprocess.user_template.clone();
+
+        return OpenAiChatPostprocessor::new(llm_config)?.process(ProcessInput {
             transcript,
             context: AppContext {
                 locale: config.output.locale.clone(),
                 ..AppContext::default()
             },
-            prompt: PostprocessPrompt::default(),
+            prompt: Default::default(),
             dictionary_terms: default_dictionary(),
-        })
-        .map(|processed| processed.text)
+        });
+    }
+
+    let processor = BuiltInTextProcessor;
+    processor.process(ProcessInput {
+        transcript,
+        context: AppContext {
+            locale: config.output.locale.clone(),
+            ..AppContext::default()
+        },
+        prompt: Default::default(),
+        dictionary_terms: default_dictionary(),
+    })
+}
+
+fn save_history(
+    config: &AppConfig,
+    raw_text: String,
+    final_text: String,
+) -> Result<(), OrallyError> {
+    if !config.privacy.history_enabled {
+        return Ok(());
+    }
+
+    let path = if let Some(path) = config
+        .privacy
+        .history_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        path.into()
+    } else {
+        let config_path = orally_config::config_path()
+            .map_err(|error| OrallyError::Processing(error.to_string()))?;
+        default_history_path(&config_path)
+    };
+    let store = HistoryStore::new(path);
+    store.append(&HistoryEntry::new(raw_text, final_text, "desktop"))
 }
 
 fn build_asr_provider(options: &AsrOptions) -> Result<Box<dyn AsrProvider>, OrallyError> {

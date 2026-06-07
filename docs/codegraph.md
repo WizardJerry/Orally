@@ -12,8 +12,11 @@ This repository is prepared for later codegraph-based structure tracking.
   chat-completions audio providers.
 - `crates/orally-config/src/lib.rs` contains TOML config presets and load/save
   helpers.
+- `crates/orally-llm/src/lib.rs` contains OpenAI-compatible chat
+  post-processing.
+- `crates/orally-storage/src/lib.rs` contains JSONL local history helpers.
 - `crates/orally-windows/src/lib.rs` contains Windows clipboard paste insertion
-  and foreground global hotkey listening.
+  with text clipboard restoration and foreground global hotkey listening.
 - `apps/orally-cli/src/main.rs` records audio, calls ASR providers, and passes
   transcripts through the built-in post-processing pipeline.
 - `apps/orally-desktop/src-tauri/src/main.rs` exposes Tauri config commands and
@@ -51,6 +54,8 @@ When codegraph tooling is available in the active session, use it to record:
 - `ChatAudioAsrProvider`
 - `ChatAudioAsrConfig`
 - `AppConfig`
+- `PostprocessConfig`
+- `PrivacyConfig`
 - `ProviderPreset`
 - `set_value`
 - `get_config_path`
@@ -72,6 +77,10 @@ When codegraph tooling is available in the active session, use it to record:
 - `restore_foreground_window`
 - `WindowsClipboardPasteInserter`
 - `WindowsPasteConfig`
+- `OpenAiChatPostprocessor`
+- `OpenAiChatPostprocessorConfig`
+- `HistoryStore`
+- `HistoryEntry`
 - `Hotkey`
 - `run_hotkey_loop`
 - `DllRegisterServer`

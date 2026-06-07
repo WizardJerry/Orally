@@ -365,6 +365,10 @@ fn print_transcript(transcript: Transcript, options: &OutputOptions) {
         );
         let inserter = WindowsClipboardPasteInserter::new(WindowsPasteConfig {
             paste_delay: std::time::Duration::from_millis(options.paste_delay_ms),
+            restore_clipboard: options.restore_clipboard,
+            restore_clipboard_delay: std::time::Duration::from_millis(
+                options.restore_clipboard_delay_ms,
+            ),
         });
         if let Err(error) = inserter.insert(&text, InsertMode::ClipboardFallback) {
             eprintln!("Insertion failed: {error}");
@@ -497,6 +501,8 @@ struct OutputOptions {
     show_changes: bool,
     insert: bool,
     paste_delay_ms: u64,
+    restore_clipboard: bool,
+    restore_clipboard_delay_ms: u64,
     locale: String,
 }
 
@@ -507,6 +513,8 @@ impl Default for OutputOptions {
             show_changes: false,
             insert: false,
             paste_delay_ms: 750,
+            restore_clipboard: true,
+            restore_clipboard_delay_ms: 250,
             locale: "zh-CN".to_string(),
         }
     }
@@ -519,6 +527,8 @@ impl OutputOptions {
             show_changes: config.output.show_changes,
             insert: config.output.insert,
             paste_delay_ms: config.output.paste_delay_ms,
+            restore_clipboard: config.output.restore_clipboard,
+            restore_clipboard_delay_ms: config.output.restore_clipboard_delay_ms,
             locale: config.output.locale.clone(),
         }
     }
