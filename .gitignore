@@ -1,0 +1,40 @@
+# Rust build artifacts
+/target/
+/target*/
+
+# Tauri generated schemas/build metadata
+apps/*/src-tauri/gen/
+
+# Local recordings and scratch audio
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Node/package manager artifacts
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+
+# Local assistant/tool configuration
+.claude/
+.cursor/
+.gemini/
+.codegraph/
+.mcp.json

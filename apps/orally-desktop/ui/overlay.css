@@ -1,0 +1,107 @@
+:root {
+  color-scheme: light;
+  --surface: #f9fbfa;
+  --surface-high: #eef3f1;
+  --primary: #006a6a;
+  --on-primary: #ffffff;
+  --text: #161d1c;
+  --muted: #52605e;
+  font-family:
+    "Segoe UI",
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  display: grid;
+  place-items: center;
+}
+
+.dictation-pill {
+  display: grid;
+  grid-template-columns: 24px 1fr 76px;
+  gap: 14px;
+  align-items: center;
+  width: calc(100% - 16px);
+  height: 72px;
+  padding: 0 14px 0 18px;
+  border: 1px solid rgb(0 0 0 / 10%);
+  border-radius: 8px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 94%, white);
+  box-shadow: 0 14px 38px rgb(0 0 0 / 20%);
+}
+
+.pulse {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--primary);
+  box-shadow: 0 0 0 0 rgb(0 106 106 / 45%);
+  animation: pulse 1.35s ease-out infinite;
+}
+
+.copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+strong {
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button {
+  height: 40px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--on-primary);
+  background: var(--primary);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgb(0 106 106 / 45%);
+  }
+
+  72%,
+  100% {
+    box-shadow: 0 0 0 14px rgb(0 106 106 / 0%);
+  }
+}

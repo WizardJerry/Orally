@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default permissions for Orally settings window",
+  "windows": ["main", "dictation"],
+  "permissions": ["core:default"]
+}

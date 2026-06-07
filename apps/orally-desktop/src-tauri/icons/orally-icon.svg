@@ -1,0 +1,8 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Orally icon</title>
+  <desc id="desc">A minimal black and white Orally monogram: an O-shaped frame containing a reversed R.</desc>
+  <circle cx="512" cy="512" r="448" fill="#000000"/>
+  <circle cx="512" cy="512" r="326" fill="#FFFFFF"/>
+  <circle cx="512" cy="512" r="242" fill="#000000"/>
+  <path fill="#FFFFFF" fill-rule="evenodd" clip-rule="evenodd" d="M362 306H554C642 306 710 368 710 451C710 511 676 561 624 586L738 724H594L500 602H478V724H362V306ZM478 404V504H548C580 504 604 484 604 452C604 425 581 404 548 404H478Z"/>
+</svg>

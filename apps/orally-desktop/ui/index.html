@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Orally Settings</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="rail">
+        <img class="brand-mark" src="./assets/orally-icon.svg" alt="Orally" />
+        <nav class="tabs" aria-label="Settings sections">
+          <button class="tab active" data-tab="provider">API</button>
+          <button class="tab" data-tab="input">输入</button>
+          <button class="tab" data-tab="postprocess">后处理</button>
+          <button class="tab" data-tab="privacy">隐私</button>
+        </nav>
+      </aside>
+
+      <section class="content">
+        <header class="topbar">
+          <div>
+            <h1>Orally</h1>
+            <p id="config-path">读取配置中...</p>
+          </div>
+          <div class="actions">
+            <button id="reload" class="tonal">重新载入</button>
+            <button id="save" class="filled">保存配置</button>
+          </div>
+        </header>
+
+        <section id="provider" class="panel active">
+          <h2>API 服务</h2>
+          <div class="field-grid">
+            <label>
+              服务商预设
+              <select id="provider-preset">
+                <option value="custom">自定义</option>
+                <option value="dashscope">阿里云百炼</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="openai">OpenAI-compatible</option>
+              </select>
+            </label>
+            <label>
+              Base URL
+              <input id="asr-base-url" spellcheck="false" />
+            </label>
+            <label>
+              模型
+              <input id="asr-model" spellcheck="false" />
+            </label>
+            <label>
+              协议
+              <select id="asr-protocol">
+                <option value="auto">auto</option>
+                <option value="chat-audio">chat-audio</option>
+                <option value="openai-transcriptions">openai-transcriptions</option>
+              </select>
+            </label>
+            <label>
+              API Key 环境变量
+              <input id="asr-api-key-env" spellcheck="false" />
+            </label>
+            <label>
+              API Key
+              <input id="asr-api-key" type="password" autocomplete="off" spellcheck="false" />
+            </label>
+            <label>
+              语言提示
+              <input id="asr-language" placeholder="zh / en / 留空" spellcheck="false" />
+            </label>
+          </div>
+        </section>
+
+        <section id="input" class="panel">
+          <h2>输入体验</h2>
+          <div class="field-grid">
+            <label>
+              热键
+              <select id="hotkey-preset">
+                <option value="ctrl-alt-space">Ctrl + Alt + Space</option>
+              </select>
+            </label>
+            <label>
+              默认固定录音秒数
+              <input id="audio-dictate-seconds" type="number" min="1" max="120" />
+            </label>
+            <label>
+              粘贴延迟 ms
+              <input id="output-paste-delay-ms" type="number" min="0" max="5000" />
+            </label>
+            <label>
+              默认输出语言
+              <input id="output-locale" spellcheck="false" />
+            </label>
+            <label class="switch-row">
+              <span>默认直接粘贴</span>
+              <input id="output-insert" type="checkbox" />
+            </label>
+            <label class="switch-row">
+              <span>显示处理变更</span>
+              <input id="output-show-changes" type="checkbox" />
+            </label>
+          </div>
+        </section>
+
+        <section id="postprocess" class="panel">
+          <h2>后处理</h2>
+          <label class="textarea-field">
+            ASR Prompt
+            <textarea id="asr-prompt" rows="7" placeholder="可选：给 ASR/音频模型的提示词"></textarea>
+          </label>
+          <label class="switch-row wide">
+            <span>输出原始转写，不做本地后处理</span>
+            <input id="output-raw" type="checkbox" />
+          </label>
+        </section>
+
+        <section id="privacy" class="panel">
+          <h2>隐私与存储</h2>
+          <div class="privacy-list">
+            <div>
+              <strong>API Key</strong>
+              <span>可只保存环境变量名称；如果在设置中填写 API Key，则会写入本地配置文件。</span>
+            </div>
+            <div>
+              <strong>配置文件</strong>
+              <span id="config-path-detail">读取中...</span>
+            </div>
+            <div>
+              <strong>音频</strong>
+              <span>当前输入链路不会默认保存录音，仅 `record` 命令会写 WAV 文件。</span>
+            </div>
+          </div>
+        </section>
+
+        <p id="status" class="status">准备就绪</p>
+      </section>
+    </main>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

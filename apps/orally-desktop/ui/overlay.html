@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Orally Dictation</title>
+    <link rel="stylesheet" href="./overlay.css" />
+  </head>
+  <body>
+    <main class="dictation-pill">
+      <div class="pulse" aria-hidden="true"></div>
+      <div class="copy">
+        <strong id="title">正在语音输入</strong>
+        <span id="detail">按 Ctrl + Alt + Space 或点击停止</span>
+      </div>
+      <button id="stop" type="button">停止</button>
+    </main>
+    <script src="./overlay.js" type="module"></script>
+  </body>
+</html>

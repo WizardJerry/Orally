@@ -1,0 +1,18 @@
+[workspace]
+members = [
+    "apps/orally-cli",
+    "apps/orally-desktop/src-tauri",
+    "apps/windows-ime",
+    "crates/orally-audio",
+    "crates/orally-asr",
+    "crates/orally-config",
+    "crates/orally-core",
+    "crates/orally-windows",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/orally-ai/orally"
+rust-version = "1.78"
