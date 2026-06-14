@@ -96,9 +96,8 @@ impl TextProcessor for OpenAiChatPostprocessor {
             .choices
             .first()
             .and_then(|choice| choice.message.content.as_deref())
-            .unwrap_or("")
-            .trim()
-            .to_string();
+            .map(sanitize_model_text)
+            .unwrap_or_default();
 
         if text.is_empty() {
             return Err(OrallyError::Processing(
@@ -143,11 +142,11 @@ struct ChatMessageResponse {
 }
 
 pub fn default_system_prompt() -> String {
-    "You are Orally's dictation postprocessor. Clean speech-to-text output while preserving the user's meaning. Return only the final text, with no explanations, markdown, quotes, or labels.".to_string()
+    "You are Orally's dictation postprocessor. Clean speech-to-text output while preserving the user's meaning, intent, and language. Remove filler words, false starts, and repeated fragments. Add natural punctuation and lightweight formatting when it is clearly implied. Return only the final text, with no explanations, markdown, quotes, or labels.".to_string()
 }
 
 pub fn default_user_template() -> String {
-    "Locale: {{locale}}\nTranscript:\n{{transcript}}\n\nRewrite the transcript into polished text suitable for direct insertion.".to_string()
+    "Locale: {{locale}}\nTranscript:\n{{transcript}}\n\nRewrite the transcript into polished text suitable for direct insertion. Preserve names, product terms, code identifiers, and mixed-language phrases exactly when they look intentional.".to_string()
 }
 
 pub fn render_user_template(template: &str, input: &ProcessInput) -> String {
@@ -187,6 +186,53 @@ fn chat_completions_endpoint(base_url: &str) -> String {
     }
 }
 
+fn sanitize_model_text(text: &str) -> String {
+    let mut cleaned = text.trim();
+
+    if cleaned.starts_with("```") {
+        cleaned = cleaned.trim_start_matches('`').trim();
+        if let Some(rest) = cleaned.strip_prefix("text") {
+            cleaned = rest.trim_start_matches(['\r', '\n', ' ']);
+        }
+        if let Some(rest) = cleaned.strip_prefix("markdown") {
+            cleaned = rest.trim_start_matches(['\r', '\n', ' ']);
+        }
+        cleaned = cleaned.trim_end_matches('`').trim();
+    }
+
+    for prefix in [
+        "Final text:",
+        "Final:",
+        "Output:",
+        "Text:",
+        "Result:",
+        "最终文本：",
+        "输出：",
+        "结果：",
+    ] {
+        if let Some(rest) = cleaned.strip_prefix(prefix) {
+            cleaned = rest.trim();
+            break;
+        }
+    }
+
+    let mut unquoted = cleaned;
+    if let Some(value) = unquoted
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    {
+        unquoted = value;
+    }
+    if let Some(value) = unquoted
+        .strip_prefix('“')
+        .and_then(|value| value.strip_suffix('”'))
+    {
+        unquoted = value;
+    }
+
+    unquoted.trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +267,18 @@ mod tests {
             config.endpoint(),
             "https://api.example.com/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn sanitizes_common_model_wrappers() {
+        assert_eq!(
+            sanitize_model_text("Final text: \"hello world\""),
+            "hello world"
+        );
+        assert_eq!(
+            sanitize_model_text("```text\nhello world\n```"),
+            "hello world"
+        );
+        assert_eq!(sanitize_model_text("输出：你好世界"), "你好世界");
     }
 }

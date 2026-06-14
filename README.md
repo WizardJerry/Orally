@@ -119,6 +119,10 @@ cargo run -p orally-cli -- config set asr.api_key "sk-..."
 cargo run -p orally-cli -- config set asr.api_key_env DASHSCOPE_API_KEY
 cargo run -p orally-cli -- config set postprocess.mode llm
 cargo run -p orally-cli -- config set postprocess.model gpt-4o-mini
+cargo run -p orally-cli -- config set postprocess.fallback_to_builtin true
+cargo run -p orally-cli -- config set audio.input_mode hold
+cargo run -p orally-cli -- config set audio.auto_stop_enabled true
+cargo run -p orally-cli -- config set audio.silence_timeout_ms 1200
 cargo run -p orally-cli -- config set output.paste_delay_ms 300
 cargo run -p orally-cli -- config set output.restore_clipboard true
 cargo run -p orally-cli -- config set output.show_changes true
@@ -140,6 +144,7 @@ Common keys:
 - `postprocess.api_key_env`
 - `postprocess.system_prompt`
 - `postprocess.user_template`
+- `postprocess.fallback_to_builtin`
 - `output.locale`
 - `output.raw`
 - `output.show_changes`
@@ -149,6 +154,12 @@ Common keys:
 - `output.restore_clipboard_delay_ms`
 - `audio.dictate_seconds`
 - `audio.record_output`
+- `audio.input_mode`
+- `audio.auto_stop_enabled`
+- `audio.min_record_ms`
+- `audio.max_record_ms`
+- `audio.silence_timeout_ms`
+- `audio.silence_threshold`
 - `hotkey.preset`
 - `privacy.allow_external_requests`
 - `privacy.history_enabled`
@@ -182,6 +193,16 @@ Press once to start recording. A small always-on-top prompt appears near the
 bottom of the screen. Press the same hotkey again, or click `停止`, to stop
 recording, transcribe, post-process, and paste the final text back into the
 window that was active when recording started.
+
+The desktop hotkey supports three input modes through `audio.input_mode`:
+
+- `toggle`: press once to start and press again to stop.
+- `hold`: hold the hotkey while speaking and release it to transcribe.
+- `fixed-window`: press once and let Orally stop after `audio.dictate_seconds`.
+
+When `audio.auto_stop_enabled = true`, Orally also watches recent voice activity
+and stops automatically after `audio.silence_timeout_ms` of silence, bounded by
+`audio.min_record_ms` and `audio.max_record_ms`.
 
 The tray menu can also start or stop dictation, pause or resume the hotkey, open
 settings, and quit Orally.
@@ -235,6 +256,9 @@ The AI postprocessor sends the ASR transcript to an OpenAI-compatible
 cleanup behavior. The user template supports `{{transcript}}` and `{{locale}}`.
 
 Set `output.raw = true` to bypass both built-in and AI post-processing.
+
+If `postprocess.fallback_to_builtin = true`, a remote AI post-processing failure
+falls back to Orally's local cleaner so the dictation can still complete.
 
 ## Local History And Clipboard Privacy
 

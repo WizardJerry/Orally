@@ -1,10 +1,12 @@
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
-use orally_audio::encode_wav_pcm16;
+use orally_audio::{decode_wav_pcm16, encode_wav_pcm16, split_pcm16_audio};
 use orally_core::{AsrProvider, AudioFormat, AudioInput, OrallyError, Transcript};
 use reqwest::blocking::{multipart, Client};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+const MAX_TRANSCRIPTION_CHUNK_DURATION: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenAiCompatibleAsrConfig {
@@ -57,7 +59,19 @@ impl OpenAiCompatibleAsrProvider {
 
 impl AsrProvider for OpenAiCompatibleAsrProvider {
     fn transcribe(&self, audio: AudioInput) -> Result<Transcript, OrallyError> {
-        let wav = audio_to_wav(audio)?;
+        let chunks = audio_to_wav_chunks(audio)?;
+        let mut transcripts = Vec::with_capacity(chunks.len());
+
+        for wav in chunks {
+            transcripts.push(self.transcribe_wav(wav)?);
+        }
+
+        combine_transcripts(transcripts, self.config.language.clone())
+    }
+}
+
+impl OpenAiCompatibleAsrProvider {
+    fn transcribe_wav(&self, wav: Vec<u8>) -> Result<Transcript, OrallyError> {
         let file = multipart::Part::bytes(wav)
             .file_name("orally-input.wav")
             .mime_str("audio/wav")
@@ -183,7 +197,19 @@ impl ChatAudioAsrProvider {
 
 impl AsrProvider for ChatAudioAsrProvider {
     fn transcribe(&self, audio: AudioInput) -> Result<Transcript, OrallyError> {
-        let wav = audio_to_wav(audio)?;
+        let chunks = audio_to_wav_chunks(audio)?;
+        let mut transcripts = Vec::with_capacity(chunks.len());
+
+        for wav in chunks {
+            transcripts.push(self.transcribe_wav(wav)?);
+        }
+
+        combine_transcripts(transcripts, self.config.language.clone())
+    }
+}
+
+impl ChatAudioAsrProvider {
+    fn transcribe_wav(&self, wav: Vec<u8>) -> Result<Transcript, OrallyError> {
         let audio_base64 = BASE64_STANDARD.encode(wav);
         let prompt = chat_audio_prompt(
             self.config.prompt.as_deref(),
@@ -358,14 +384,52 @@ fn validate_chat_audio_config(config: &ChatAudioAsrConfig) -> Result<(), OrallyE
     Ok(())
 }
 
-fn audio_to_wav(audio: AudioInput) -> Result<Vec<u8>, OrallyError> {
+fn audio_to_wav_chunks(audio: AudioInput) -> Result<Vec<Vec<u8>>, OrallyError> {
     match audio.format {
-        AudioFormat::Wav => Ok(audio.bytes),
-        AudioFormat::Pcm16 => encode_wav_pcm16(&audio),
+        AudioFormat::Wav => match decode_wav_pcm16(&audio.bytes) {
+            Ok(decoded) => pcm16_to_wav_chunks(&decoded),
+            Err(_) => Ok(vec![audio.bytes]),
+        },
+        AudioFormat::Pcm16 => pcm16_to_wav_chunks(&audio),
         other => Err(OrallyError::InvalidInput(format!(
             "ASR provider requires WAV or PCM16 audio, got {other:?}"
         ))),
     }
+}
+
+fn pcm16_to_wav_chunks(audio: &AudioInput) -> Result<Vec<Vec<u8>>, OrallyError> {
+    split_pcm16_audio(audio, MAX_TRANSCRIPTION_CHUNK_DURATION)?
+        .iter()
+        .map(encode_wav_pcm16)
+        .collect()
+}
+
+fn combine_transcripts(
+    transcripts: Vec<Transcript>,
+    fallback_language: Option<String>,
+) -> Result<Transcript, OrallyError> {
+    let language = transcripts
+        .iter()
+        .find_map(|transcript| transcript.language.clone())
+        .or(fallback_language);
+    let text = transcripts
+        .into_iter()
+        .map(|transcript| transcript.text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if text.trim().is_empty() {
+        return Err(OrallyError::Asr(
+            "provider returned an empty transcript".to_string(),
+        ));
+    }
+
+    Ok(Transcript {
+        text,
+        language,
+        segments: Vec::new(),
+    })
 }
 
 fn transcription_endpoint(base_url: &str) -> String {
@@ -580,5 +644,46 @@ mod tests {
             items[0].get("type").and_then(|value| value.as_str()),
             Some("text")
         );
+    }
+
+    #[test]
+    fn pcm16_audio_is_split_before_transcription() {
+        let seconds = MAX_TRANSCRIPTION_CHUNK_DURATION.as_secs() + 1;
+        let sample_rate_hz = 16_000_u32;
+        let sample_count = seconds * u64::from(sample_rate_hz);
+        let audio = AudioInput {
+            bytes: vec![0; sample_count as usize * 2],
+            sample_rate_hz,
+            channels: 1,
+            format: AudioFormat::Pcm16,
+        };
+
+        let chunks = audio_to_wav_chunks(audio).expect("audio should split into WAV chunks");
+
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].len() > chunks[1].len());
+    }
+
+    #[test]
+    fn combines_chunk_transcripts_in_order() {
+        let combined = combine_transcripts(
+            vec![
+                Transcript {
+                    text: " first ".to_string(),
+                    language: Some("en".to_string()),
+                    segments: Vec::new(),
+                },
+                Transcript {
+                    text: "second".to_string(),
+                    language: None,
+                    segments: Vec::new(),
+                },
+            ],
+            None,
+        )
+        .expect("transcripts should combine");
+
+        assert_eq!(combined.text, "first\nsecond");
+        assert_eq!(combined.language, Some("en".to_string()));
     }
 }

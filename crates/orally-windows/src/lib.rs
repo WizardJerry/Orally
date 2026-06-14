@@ -168,6 +168,10 @@ pub fn run_hotkey_loop(
     platform::run_hotkey_loop(hotkey, &mut on_event)
 }
 
+pub fn is_hotkey_pressed(hotkey: Hotkey) -> bool {
+    platform::is_hotkey_pressed(hotkey)
+}
+
 #[cfg(windows)]
 mod platform {
     use super::{Hotkey, HotkeyEvent, VirtualKey};
@@ -187,8 +191,9 @@ mod platform {
     };
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        RegisterHotKey, SendInput, UnregisterHotKey, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-        KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, VK_CONTROL, VK_V,
+        GetAsyncKeyState, RegisterHotKey, SendInput, UnregisterHotKey, INPUT, INPUT_0,
+        INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
+        MOD_WIN, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, GetMessageW, TranslateMessage, MSG, WM_HOTKEY,
@@ -254,6 +259,16 @@ mod platform {
         }
 
         Ok(())
+    }
+
+    pub fn is_hotkey_pressed(hotkey: Hotkey) -> bool {
+        key_is_down(virtual_key_code(hotkey.key) as i32)
+            && (!hotkey.modifiers.ctrl || key_is_down(i32::from(VK_CONTROL)))
+            && (!hotkey.modifiers.alt || key_is_down(i32::from(VK_MENU)))
+            && (!hotkey.modifiers.shift || key_is_down(i32::from(VK_SHIFT)))
+            && (!hotkey.modifiers.win
+                || key_is_down(i32::from(VK_LWIN))
+                || key_is_down(i32::from(VK_RWIN)))
     }
 
     fn set_clipboard_text(text: &str) -> Result<(), OrallyError> {
@@ -452,6 +467,10 @@ mod platform {
             VirtualKey::F12 => 0x7B,
         }
     }
+
+    fn key_is_down(vk: i32) -> bool {
+        unsafe { GetAsyncKeyState(vk) < 0 }
+    }
 }
 
 #[cfg(not(windows))]
@@ -477,6 +496,10 @@ mod platform {
         Err(OrallyError::Insertion(
             "Windows hotkey listening is only available on Windows".to_string(),
         ))
+    }
+
+    pub fn is_hotkey_pressed(_hotkey: Hotkey) -> bool {
+        false
     }
 }
 

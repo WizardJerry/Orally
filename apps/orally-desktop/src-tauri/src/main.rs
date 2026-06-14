@@ -4,7 +4,7 @@ use orally_asr::{
     ChatAudioAsrConfig, ChatAudioAsrProvider, OpenAiCompatibleAsrConfig,
     OpenAiCompatibleAsrProvider,
 };
-use orally_audio::CpalRecordingSession;
+use orally_audio::{CpalRecordingSession, VoiceActivityConfig};
 use orally_config::AppConfig;
 use orally_core::{
     AppContext, AsrProvider, BuiltInTextProcessor, DictionaryTerm, InsertMode, OrallyError,
@@ -12,10 +12,15 @@ use orally_core::{
 };
 use orally_llm::{OpenAiChatPostprocessor, OpenAiChatPostprocessorConfig};
 use orally_storage::{default_history_path, HistoryEntry, HistoryStore};
-use orally_windows::{run_hotkey_loop, Hotkey, WindowsClipboardPasteInserter, WindowsPasteConfig};
+use orally_windows::{
+    is_hotkey_pressed, run_hotkey_loop, Hotkey, WindowsClipboardPasteInserter, WindowsPasteConfig,
+};
 use serde::Serialize;
 use std::env;
-use std::sync::{mpsc, Mutex};
+use std::sync::{
+    mpsc::{self, RecvTimeoutError},
+    Mutex,
+};
 use std::thread;
 use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
@@ -39,6 +44,7 @@ enum DictationCommand {
 struct ActiveRecording {
     session: CpalRecordingSession,
     target: Option<ForegroundWindow>,
+    options: DictationOptions,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +62,33 @@ enum AsrProtocol {
     Auto,
     OpenAiTranscriptions,
     ChatAudio,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputMode {
+    Toggle,
+    Hold,
+    FixedWindow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DictationOptions {
+    input_mode: InputMode,
+    fixed_duration: Duration,
+    auto_stop_enabled: bool,
+    min_record_duration: Duration,
+    max_record_duration: Duration,
+    silence_timeout: Duration,
+    silence_threshold: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopReason {
+    User,
+    Released,
+    Silence,
+    FixedWindow,
+    MaxDuration,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +207,7 @@ fn start_dictation_service(app: AppHandle) -> DictationController {
     let hotkey_sender = sender.clone();
     let hotkey_app = app.clone();
     let hotkey = load_hotkey();
+    let processor_hotkey = hotkey;
     let hotkey_label = hotkey.label();
 
     thread::spawn(move || {
@@ -191,7 +225,7 @@ fn start_dictation_service(app: AppHandle) -> DictationController {
         }
     });
 
-    thread::spawn(move || run_dictation_processor(app, receiver, hotkey_label));
+    thread::spawn(move || run_dictation_processor(app, receiver, processor_hotkey, hotkey_label));
 
     DictationController {
         sender: Mutex::new(sender),
@@ -205,71 +239,149 @@ fn load_hotkey() -> Hotkey {
         .unwrap_or_else(Hotkey::ctrl_alt_space)
 }
 
+fn load_dictation_options() -> DictationOptions {
+    orally_config::load_or_default()
+        .map(|config| DictationOptions::from_config(&config))
+        .unwrap_or_default()
+}
+
 fn run_dictation_processor(
     app: AppHandle,
     receiver: mpsc::Receiver<DictationCommand>,
+    hotkey: Hotkey,
     hotkey_label: String,
 ) {
     let mut recording: Option<ActiveRecording> = None;
     let mut paused = false;
 
-    while let Ok(command) = receiver.recv() {
-        match command {
-            DictationCommand::TogglePause => {
-                paused = !paused;
-                if paused {
-                    show_transient_overlay(
-                        &app,
-                        "热键已暂停",
-                        "托盘菜单仍可手动开始或停止语音输入",
-                        Duration::from_secs(3),
-                    );
-                } else {
-                    show_transient_overlay(
-                        &app,
-                        "热键已恢复",
-                        &format!("当前热键：{hotkey_label}"),
-                        Duration::from_secs(3),
-                    );
-                }
-            }
-            DictationCommand::ToggleFromHotkey if paused => {}
-            DictationCommand::ToggleFromHotkey | DictationCommand::ToggleFromUi => {
-                if let Some(active) = recording.take() {
-                    hide_overlay(&app);
-                    if let Err(error) = finish_dictation(&app, active) {
+    loop {
+        match receiver.recv_timeout(Duration::from_millis(120)) {
+            Ok(command) => match command {
+                DictationCommand::TogglePause => {
+                    paused = !paused;
+                    if paused {
                         show_transient_overlay(
                             &app,
-                            "语音输入失败",
-                            &format!("{error}"),
-                            Duration::from_secs(5),
+                            "热键已暂停",
+                            "托盘菜单仍可手动开始或停止语音输入",
+                            Duration::from_secs(3),
+                        );
+                    } else {
+                        show_transient_overlay(
+                            &app,
+                            "热键已恢复",
+                            &format!("当前热键：{hotkey_label}"),
+                            Duration::from_secs(3),
                         );
                     }
-                    while receiver.try_recv().is_ok() {}
-                } else {
-                    match CpalRecordingSession::start() {
-                        Ok(session) => {
-                            recording = Some(ActiveRecording {
-                                session,
-                                target: capture_foreground_window(),
-                            });
-                            show_recording_overlay(&app, &hotkey_label);
+                }
+                DictationCommand::ToggleFromHotkey if paused => {}
+                DictationCommand::ToggleFromHotkey | DictationCommand::ToggleFromUi => {
+                    if let Some(active) = recording.take() {
+                        hide_overlay(&app);
+                        if let Err(error) = finish_dictation(&app, active, StopReason::User) {
+                            show_transient_overlay(
+                                &app,
+                                "语音输入失败",
+                                &format!("{error}"),
+                                Duration::from_secs(5),
+                            );
                         }
-                        Err(error) => show_transient_overlay(
-                            &app,
-                            "录音启动失败",
-                            &format!("{error}"),
-                            Duration::from_secs(5),
-                        ),
+                        while receiver.try_recv().is_ok() {}
+                    } else {
+                        match CpalRecordingSession::start() {
+                            Ok(session) => {
+                                let options = load_dictation_options();
+                                recording = Some(ActiveRecording {
+                                    session,
+                                    target: capture_foreground_window(),
+                                    options,
+                                });
+                                show_recording_overlay(&app, &hotkey_label, options);
+                            }
+                            Err(error) => show_transient_overlay(
+                                &app,
+                                "录音启动失败",
+                                &format!("{error}"),
+                                Duration::from_secs(5),
+                            ),
+                        }
+                    }
+                }
+            },
+            Err(RecvTimeoutError::Timeout) => {
+                let stop_reason = recording
+                    .as_ref()
+                    .and_then(|active| auto_stop_reason(active, hotkey));
+                if let Some(reason) = stop_reason {
+                    if let Some(active) = recording.take() {
+                        hide_overlay(&app);
+                        if let Err(error) = finish_dictation(&app, active, reason) {
+                            show_transient_overlay(
+                                &app,
+                                "语音输入失败",
+                                &format!("{error}"),
+                                Duration::from_secs(5),
+                            );
+                        }
+                        while receiver.try_recv().is_ok() {}
                     }
                 }
             }
+            Err(RecvTimeoutError::Disconnected) => break,
         }
     }
 }
 
-fn finish_dictation(app: &AppHandle, active: ActiveRecording) -> Result<(), OrallyError> {
-    show_processing_overlay(app);
+fn auto_stop_reason(active: &ActiveRecording, hotkey: Hotkey) -> Option<StopReason> {
+    let elapsed = active.session.elapsed();
+    let options = active.options;
+
+    if elapsed >= options.max_record_duration {
+        return Some(StopReason::MaxDuration);
+    }
+
+    match options.input_mode {
+        InputMode::Hold if elapsed >= options.min_record_duration && !is_hotkey_pressed(hotkey) => {
+            return Some(StopReason::Released);
+        }
+        InputMode::FixedWindow if elapsed >= options.fixed_duration => {
+            return Some(StopReason::FixedWindow);
+        }
+        _ => {}
+    }
+
+    if !options.auto_stop_enabled || elapsed < options.min_record_duration {
+        return None;
+    }
+
+    let metrics = active
+        .session
+        .recent_metrics(
+            options.silence_timeout,
+            VoiceActivityConfig {
+                sample_threshold: options.silence_threshold,
+            },
+        )
+        .ok()?;
+    let enough_window = u128::from(metrics.duration_ms) * 4
+        >= options.silence_timeout.as_millis().saturating_mul(3);
+    if enough_window
+        && metrics.voice_activity_ratio <= 0.01
+        && metrics.rms_amplitude < options.silence_threshold
+    {
+        Some(StopReason::Silence)
+    } else {
+        None
+    }
+}
+
+fn finish_dictation(
+    app: &AppHandle,
+    active: ActiveRecording,
+    stop_reason: StopReason,
+) -> Result<(), OrallyError> {
+    show_processing_overlay(app, stop_reason);
 
     let recorded = active.session.stop()?;
     let config = orally_config::load_or_default()
@@ -302,9 +414,57 @@ fn finish_dictation(app: &AppHandle, active: ActiveRecording) -> Result<(), Oral
             Duration::from_secs(4),
         );
     } else {
-        show_transient_overlay(app, "已插入文本", "语音输入完成", Duration::from_secs(2));
+        show_transient_overlay(
+            app,
+            "已插入文本",
+            completion_detail(stop_reason),
+            Duration::from_secs(2),
+        );
     }
     Ok(())
+}
+
+impl Default for DictationOptions {
+    fn default() -> Self {
+        Self {
+            input_mode: InputMode::Toggle,
+            fixed_duration: Duration::from_secs(3),
+            auto_stop_enabled: true,
+            min_record_duration: Duration::from_millis(450),
+            max_record_duration: Duration::from_secs(120),
+            silence_timeout: Duration::from_millis(1_200),
+            silence_threshold: 0.02,
+        }
+    }
+}
+
+impl DictationOptions {
+    fn from_config(config: &AppConfig) -> Self {
+        let mut options = Self::default();
+        options.input_mode = InputMode::parse(&config.audio.input_mode);
+        options.fixed_duration = Duration::from_secs(config.audio.dictate_seconds.max(1));
+        options.auto_stop_enabled = config.audio.auto_stop_enabled;
+        options.min_record_duration = Duration::from_millis(config.audio.min_record_ms);
+        options.max_record_duration = Duration::from_millis(
+            config
+                .audio
+                .max_record_ms
+                .max(config.audio.min_record_ms.saturating_add(1)),
+        );
+        options.silence_timeout = Duration::from_millis(config.audio.silence_timeout_ms.max(250));
+        options.silence_threshold = config.audio.silence_threshold.clamp(0.001, 1.0);
+        options
+    }
+}
+
+impl InputMode {
+    fn parse(value: &str) -> Self {
+        match value {
+            "hold" | "push-to-talk" | "push_to_talk" => Self::Hold,
+            "fixed" | "fixed-window" | "fixed_window" => Self::FixedWindow,
+            _ => Self::Toggle,
+        }
+    }
 }
 
 fn process_text(transcript: Transcript, config: &AppConfig) -> Result<ProcessedText, OrallyError> {
@@ -314,6 +474,16 @@ fn process_text(transcript: Transcript, config: &AppConfig) -> Result<ProcessedT
             changes: Vec::new(),
         });
     }
+
+    let input = ProcessInput {
+        transcript,
+        context: AppContext {
+            locale: config.output.locale.clone(),
+            ..AppContext::default()
+        },
+        prompt: Default::default(),
+        dictionary_terms: default_dictionary(),
+    };
 
     if matches!(config.postprocess.mode.as_str(), "llm" | "ai") {
         let api_key = config
@@ -336,27 +506,21 @@ fn process_text(transcript: Transcript, config: &AppConfig) -> Result<ProcessedT
         llm_config.system_prompt = config.postprocess.system_prompt.clone();
         llm_config.user_template = config.postprocess.user_template.clone();
 
-        return OpenAiChatPostprocessor::new(llm_config)?.process(ProcessInput {
-            transcript,
-            context: AppContext {
-                locale: config.output.locale.clone(),
-                ..AppContext::default()
-            },
-            prompt: Default::default(),
-            dictionary_terms: default_dictionary(),
-        });
+        match OpenAiChatPostprocessor::new(llm_config)?.process(input.clone()) {
+            Ok(processed) => return Ok(processed),
+            Err(error) if config.postprocess.fallback_to_builtin => {
+                let mut processed = BuiltInTextProcessor.process(input)?;
+                processed.changes.push(format!(
+                    "AI postprocessor failed; used built-in cleanup: {error}"
+                ));
+                return Ok(processed);
+            }
+            Err(error) => return Err(error),
+        }
     }
 
     let processor = BuiltInTextProcessor;
-    processor.process(ProcessInput {
-        transcript,
-        context: AppContext {
-            locale: config.output.locale.clone(),
-            ..AppContext::default()
-        },
-        prompt: Default::default(),
-        dictionary_terms: default_dictionary(),
-    })
+    processor.process(input)
 }
 
 fn save_history(
@@ -478,26 +642,54 @@ fn default_dictionary() -> Vec<DictionaryTerm> {
     ]
 }
 
-fn show_recording_overlay(app: &AppHandle, hotkey_label: &str) {
+fn show_recording_overlay(app: &AppHandle, hotkey_label: &str, options: DictationOptions) {
+    let detail = match options.input_mode {
+        InputMode::Toggle => format!("按 {hotkey_label} 或点击停止"),
+        InputMode::Hold => format!("按住 {hotkey_label} 说话，松开后自动整理"),
+        InputMode::FixedWindow => format!(
+            "正在录音 {} 秒，可点击停止提前整理",
+            options.fixed_duration.as_secs()
+        ),
+    };
     show_overlay(
         app,
         OverlayStatus {
             title: "正在语音输入".to_string(),
-            detail: format!("按 {hotkey_label} 或点击停止"),
+            detail,
             can_stop: true,
         },
     );
 }
 
-fn show_processing_overlay(app: &AppHandle) {
+fn show_processing_overlay(app: &AppHandle, stop_reason: StopReason) {
     show_overlay(
         app,
         OverlayStatus {
             title: "正在整理文字".to_string(),
-            detail: "正在识别并后处理语音内容".to_string(),
+            detail: processing_detail(stop_reason).to_string(),
             can_stop: false,
         },
     );
+}
+
+fn processing_detail(stop_reason: StopReason) -> &'static str {
+    match stop_reason {
+        StopReason::User => "正在识别并后处理语音内容",
+        StopReason::Released => "已松开热键，正在整理语音内容",
+        StopReason::Silence => "检测到停顿，正在整理语音内容",
+        StopReason::FixedWindow => "固定录音时长结束，正在整理语音内容",
+        StopReason::MaxDuration => "已到最大录音时长，正在整理语音内容",
+    }
+}
+
+fn completion_detail(stop_reason: StopReason) -> &'static str {
+    match stop_reason {
+        StopReason::User => "语音输入完成",
+        StopReason::Released => "已按住说话并完成插入",
+        StopReason::Silence => "静音判停后已完成插入",
+        StopReason::FixedWindow => "固定时长录音已完成插入",
+        StopReason::MaxDuration => "最大时长保护后已完成插入",
+    }
 }
 
 fn show_transient_overlay(app: &AppHandle, title: &str, detail: &str, duration: Duration) {

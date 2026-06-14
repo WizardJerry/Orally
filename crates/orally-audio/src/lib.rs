@@ -119,6 +119,42 @@ impl CpalRecordingSession {
 
         Ok(RecordedAudio { audio, metrics })
     }
+
+    pub fn elapsed(&self) -> Duration {
+        self.started_at.elapsed()
+    }
+
+    pub fn recent_metrics(
+        &self,
+        window: Duration,
+        vad_config: VoiceActivityConfig,
+    ) -> Result<AudioMetrics, OrallyError> {
+        if window.is_zero() {
+            return Err(OrallyError::InvalidInput(
+                "metrics window must be greater than zero".to_string(),
+            ));
+        }
+
+        let samples = self
+            .samples
+            .lock()
+            .map_err(|error| OrallyError::Audio(error.to_string()))?;
+        let channel_count = usize::from(self.channels.max(1));
+        let max_frames = frames_for_duration(self.sample_rate_hz, window)?;
+        let max_samples = max_frames
+            .checked_mul(channel_count)
+            .ok_or_else(|| OrallyError::InvalidInput("metrics window is too large".to_string()))?;
+        let start = samples.len().saturating_sub(max_samples);
+        let bytes = pcm16_samples_to_bytes(&samples[start..]);
+        let audio = AudioInput {
+            bytes,
+            sample_rate_hz: self.sample_rate_hz,
+            channels: self.channels,
+            format: AudioFormat::Pcm16,
+        };
+
+        analyze_pcm16(&audio, vad_config)
+    }
 }
 
 pub fn analyze_pcm16(
@@ -210,6 +246,162 @@ pub fn encode_wav_pcm16(audio: &AudioInput) -> Result<Vec<u8>, OrallyError> {
     wav.extend_from_slice(&audio.bytes);
 
     Ok(wav)
+}
+
+pub fn decode_wav_pcm16(bytes: &[u8]) -> Result<AudioInput, OrallyError> {
+    if bytes.len() < 44 {
+        return Err(OrallyError::InvalidInput(
+            "WAV input is too short".to_string(),
+        ));
+    }
+
+    if &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err(OrallyError::InvalidInput(
+            "WAV input must use RIFF/WAVE format".to_string(),
+        ));
+    }
+
+    let mut cursor = 12_usize;
+    let mut sample_rate_hz = None;
+    let mut channels = None;
+    let mut bits_per_sample = None;
+    let mut audio_format = None;
+    let mut data = None;
+
+    while cursor.checked_add(8).is_some_and(|end| end <= bytes.len()) {
+        let chunk_id = &bytes[cursor..cursor + 4];
+        let chunk_len = u32::from_le_bytes([
+            bytes[cursor + 4],
+            bytes[cursor + 5],
+            bytes[cursor + 6],
+            bytes[cursor + 7],
+        ]) as usize;
+        cursor += 8;
+
+        let chunk_end = cursor
+            .checked_add(chunk_len)
+            .ok_or_else(|| OrallyError::InvalidInput("WAV chunk is too large".to_string()))?;
+        if chunk_end > bytes.len() {
+            return Err(OrallyError::InvalidInput(
+                "WAV chunk extends past end of input".to_string(),
+            ));
+        }
+
+        match chunk_id {
+            b"fmt " => {
+                if chunk_len < 16 {
+                    return Err(OrallyError::InvalidInput(
+                        "WAV fmt chunk is too short".to_string(),
+                    ));
+                }
+                audio_format = Some(u16::from_le_bytes([bytes[cursor], bytes[cursor + 1]]));
+                channels = Some(u16::from_le_bytes([bytes[cursor + 2], bytes[cursor + 3]]));
+                sample_rate_hz = Some(u32::from_le_bytes([
+                    bytes[cursor + 4],
+                    bytes[cursor + 5],
+                    bytes[cursor + 6],
+                    bytes[cursor + 7],
+                ]));
+                bits_per_sample =
+                    Some(u16::from_le_bytes([bytes[cursor + 14], bytes[cursor + 15]]));
+            }
+            b"data" => {
+                data = Some(bytes[cursor..chunk_end].to_vec());
+            }
+            _ => {}
+        }
+
+        cursor = chunk_end + (chunk_len % 2);
+    }
+
+    if audio_format != Some(1) || bits_per_sample != Some(16) {
+        return Err(OrallyError::InvalidInput(
+            "only PCM16 WAV input is supported".to_string(),
+        ));
+    }
+
+    let sample_rate_hz = sample_rate_hz
+        .ok_or_else(|| OrallyError::InvalidInput("WAV input is missing sample rate".to_string()))?;
+    let channels = channels
+        .ok_or_else(|| OrallyError::InvalidInput("WAV input is missing channels".to_string()))?;
+    let data = data
+        .ok_or_else(|| OrallyError::InvalidInput("WAV input is missing data chunk".to_string()))?;
+
+    Ok(AudioInput {
+        bytes: data,
+        sample_rate_hz,
+        channels,
+        format: AudioFormat::Pcm16,
+    })
+}
+
+pub fn split_pcm16_audio(
+    audio: &AudioInput,
+    max_duration: Duration,
+) -> Result<Vec<AudioInput>, OrallyError> {
+    if audio.format != AudioFormat::Pcm16 {
+        return Err(OrallyError::InvalidInput(
+            "audio splitting currently requires PCM16 input".to_string(),
+        ));
+    }
+    if max_duration.is_zero() {
+        return Err(OrallyError::InvalidInput(
+            "audio chunk duration must be greater than zero".to_string(),
+        ));
+    }
+    if audio.sample_rate_hz == 0 {
+        return Err(OrallyError::InvalidInput(
+            "PCM16 audio sample rate must be greater than zero".to_string(),
+        ));
+    }
+    if audio.channels == 0 {
+        return Err(OrallyError::InvalidInput(
+            "PCM16 audio channel count must be greater than zero".to_string(),
+        ));
+    }
+
+    let frame_size = usize::from(audio.channels)
+        .checked_mul(2)
+        .ok_or_else(|| OrallyError::InvalidInput("invalid PCM16 frame size".to_string()))?;
+    if audio.bytes.len() % frame_size != 0 {
+        return Err(OrallyError::InvalidInput(
+            "PCM16 byte length must align to complete frames".to_string(),
+        ));
+    }
+
+    let max_frames = frames_for_duration(audio.sample_rate_hz, max_duration)?;
+    let max_bytes = max_frames
+        .checked_mul(frame_size)
+        .ok_or_else(|| OrallyError::InvalidInput("audio chunk would be too large".to_string()))?;
+    if max_bytes == 0 {
+        return Err(OrallyError::InvalidInput(
+            "audio chunk duration is too short for the sample rate".to_string(),
+        ));
+    }
+
+    Ok(audio
+        .bytes
+        .chunks(max_bytes)
+        .map(|chunk| AudioInput {
+            bytes: chunk.to_vec(),
+            sample_rate_hz: audio.sample_rate_hz,
+            channels: audio.channels,
+            format: AudioFormat::Pcm16,
+        })
+        .collect())
+}
+
+fn frames_for_duration(sample_rate_hz: u32, duration: Duration) -> Result<usize, OrallyError> {
+    let frames = duration
+        .as_nanos()
+        .checked_mul(u128::from(sample_rate_hz))
+        .ok_or_else(|| {
+            OrallyError::InvalidInput("audio chunk duration is too large".to_string())
+        })?
+        / 1_000_000_000_u128;
+
+    usize::try_from(frames)
+        .map_err(|_| OrallyError::InvalidInput("audio chunk duration is too large".to_string()))
 }
 
 fn build_stream(
@@ -339,5 +531,58 @@ mod tests {
         assert_eq!(metrics.peak_amplitude, 1.0);
         assert_eq!(metrics.voice_activity_ratio, 0.5);
         assert!(metrics.rms_amplitude > 0.5);
+    }
+
+    #[test]
+    fn decodes_pcm16_wav() {
+        let audio = AudioInput {
+            bytes: pcm16_samples_to_bytes(&[0, i16::MAX]),
+            sample_rate_hz: 16_000,
+            channels: 1,
+            format: AudioFormat::Pcm16,
+        };
+        let wav = encode_wav_pcm16(&audio).expect("WAV encoding should work");
+
+        let decoded = decode_wav_pcm16(&wav).expect("WAV decoding should work");
+
+        assert_eq!(decoded, audio);
+    }
+
+    #[test]
+    fn splits_pcm16_audio_on_frame_boundaries() {
+        let audio = AudioInput {
+            bytes: pcm16_samples_to_bytes(&[0, 1, 2, 3, 4, 5]),
+            sample_rate_hz: 2,
+            channels: 1,
+            format: AudioFormat::Pcm16,
+        };
+
+        let chunks = split_pcm16_audio(&audio, Duration::from_secs(1)).expect("audio should split");
+
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].bytes, pcm16_samples_to_bytes(&[0, 1]));
+        assert_eq!(chunks[1].bytes, pcm16_samples_to_bytes(&[2, 3]));
+        assert_eq!(chunks[2].bytes, pcm16_samples_to_bytes(&[4, 5]));
+    }
+
+    #[test]
+    fn analyzes_silence_as_inactive_voice() {
+        let audio = AudioInput {
+            bytes: pcm16_samples_to_bytes(&[0, 0, 0, 0]),
+            sample_rate_hz: 4,
+            channels: 1,
+            format: AudioFormat::Pcm16,
+        };
+
+        let metrics = analyze_pcm16(
+            &audio,
+            VoiceActivityConfig {
+                sample_threshold: 0.02,
+            },
+        )
+        .expect("metrics should calculate");
+
+        assert_eq!(metrics.voice_activity_ratio, 0.0);
+        assert_eq!(metrics.rms_amplitude, 0.0);
     }
 }

@@ -5,7 +5,7 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub asr: AsrConfig,
@@ -135,6 +135,8 @@ pub struct PostprocessConfig {
     pub api_key_env: String,
     pub system_prompt: String,
     pub user_template: String,
+    #[serde(default = "default_postprocess_fallback_to_builtin")]
+    pub fallback_to_builtin: bool,
 }
 
 impl Default for PostprocessConfig {
@@ -145,8 +147,9 @@ impl Default for PostprocessConfig {
             model: String::new(),
             api_key: None,
             api_key_env: "ORALLY_LLM_API_KEY".to_string(),
-            system_prompt: "You are Orally's dictation postprocessor. Clean speech-to-text output while preserving the user's meaning. Return only the final text, with no explanations, markdown, quotes, or labels.".to_string(),
-            user_template: "Locale: {{locale}}\nTranscript:\n{{transcript}}\n\nRewrite the transcript into polished text suitable for direct insertion.".to_string(),
+            system_prompt: "You are Orally's dictation postprocessor. Clean speech-to-text output while preserving the user's meaning, intent, and language. Remove filler words, false starts, and repeated fragments. Add natural punctuation and lightweight formatting when it is clearly implied. Return only the final text, with no explanations, markdown, quotes, or labels.".to_string(),
+            user_template: "Locale: {{locale}}\nTranscript:\n{{transcript}}\n\nRewrite the transcript into polished text suitable for direct insertion. Preserve names, product terms, code identifiers, and mixed-language phrases exactly when they look intentional.".to_string(),
+            fallback_to_builtin: true,
         }
     }
 }
@@ -178,10 +181,22 @@ impl Default for OutputConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AudioConfig {
     pub dictate_seconds: u64,
     pub record_output: String,
+    #[serde(default = "default_input_mode")]
+    pub input_mode: String,
+    #[serde(default = "default_auto_stop_enabled")]
+    pub auto_stop_enabled: bool,
+    #[serde(default = "default_min_record_ms")]
+    pub min_record_ms: u64,
+    #[serde(default = "default_max_record_ms")]
+    pub max_record_ms: u64,
+    #[serde(default = "default_silence_timeout_ms")]
+    pub silence_timeout_ms: u64,
+    #[serde(default = "default_silence_threshold")]
+    pub silence_threshold: f32,
 }
 
 impl Default for AudioConfig {
@@ -189,6 +204,12 @@ impl Default for AudioConfig {
         Self {
             dictate_seconds: 3,
             record_output: "orally-recording.wav".to_string(),
+            input_mode: default_input_mode(),
+            auto_stop_enabled: default_auto_stop_enabled(),
+            min_record_ms: default_min_record_ms(),
+            max_record_ms: default_max_record_ms(),
+            silence_timeout_ms: default_silence_timeout_ms(),
+            silence_threshold: default_silence_threshold(),
         }
     }
 }
@@ -397,6 +418,9 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<(), C
         "postprocess.api_key_env" => config.postprocess.api_key_env = value.to_string(),
         "postprocess.system_prompt" => config.postprocess.system_prompt = value.to_string(),
         "postprocess.user_template" => config.postprocess.user_template = value.to_string(),
+        "postprocess.fallback_to_builtin" => {
+            config.postprocess.fallback_to_builtin = parse_bool(key, value)?
+        }
         "output.locale" => config.output.locale = value.to_string(),
         "output.raw" => config.output.raw = parse_bool(key, value)?,
         "output.show_changes" => config.output.show_changes = parse_bool(key, value)?,
@@ -408,6 +432,12 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<(), C
         }
         "audio.dictate_seconds" => config.audio.dictate_seconds = parse_u64(key, value)?,
         "audio.record_output" => config.audio.record_output = value.to_string(),
+        "audio.input_mode" => config.audio.input_mode = value.to_string(),
+        "audio.auto_stop_enabled" => config.audio.auto_stop_enabled = parse_bool(key, value)?,
+        "audio.min_record_ms" => config.audio.min_record_ms = parse_u64(key, value)?,
+        "audio.max_record_ms" => config.audio.max_record_ms = parse_u64(key, value)?,
+        "audio.silence_timeout_ms" => config.audio.silence_timeout_ms = parse_u64(key, value)?,
+        "audio.silence_threshold" => config.audio.silence_threshold = parse_f32(key, value)?,
         "hotkey.preset" => config.hotkey.preset = value.to_string(),
         "privacy.allow_external_requests" => {
             config.privacy.allow_external_requests = parse_bool(key, value)?
@@ -426,6 +456,34 @@ fn default_restore_clipboard() -> bool {
 
 fn default_restore_clipboard_delay_ms() -> u64 {
     250
+}
+
+fn default_postprocess_fallback_to_builtin() -> bool {
+    true
+}
+
+fn default_input_mode() -> String {
+    "toggle".to_string()
+}
+
+fn default_auto_stop_enabled() -> bool {
+    true
+}
+
+fn default_min_record_ms() -> u64 {
+    450
+}
+
+fn default_max_record_ms() -> u64 {
+    120_000
+}
+
+fn default_silence_timeout_ms() -> u64 {
+    1_200
+}
+
+fn default_silence_threshold() -> f32 {
+    0.02
 }
 
 fn optional_string(value: &str) -> Option<String> {
@@ -449,6 +507,13 @@ fn parse_bool(key: &str, value: &str) -> Result<bool, ConfigError> {
 
 fn parse_u64(key: &str, value: &str) -> Result<u64, ConfigError> {
     value.parse::<u64>().map_err(|_| ConfigError::InvalidValue {
+        key: key.to_string(),
+        value: value.to_string(),
+    })
+}
+
+fn parse_f32(key: &str, value: &str) -> Result<f32, ConfigError> {
+    value.parse::<f32>().map_err(|_| ConfigError::InvalidValue {
         key: key.to_string(),
         value: value.to_string(),
     })
@@ -482,10 +547,18 @@ mod tests {
         set_value(&mut config, "asr.model", "qwen3-asr-flash").expect("model should update");
         set_value(&mut config, "output.insert", "true").expect("insert should update");
         set_value(&mut config, "asr.language", "none").expect("language should clear");
+        set_value(&mut config, "audio.input_mode", "hold").expect("mode should update");
+        set_value(&mut config, "audio.silence_threshold", "0.015")
+            .expect("threshold should update");
+        set_value(&mut config, "postprocess.fallback_to_builtin", "false")
+            .expect("fallback should update");
 
         assert_eq!(config.asr.model, "qwen3-asr-flash");
         assert!(config.output.insert);
         assert_eq!(config.asr.language, None);
+        assert_eq!(config.audio.input_mode, "hold");
+        assert_eq!(config.audio.silence_threshold, 0.015);
+        assert!(!config.postprocess.fallback_to_builtin);
     }
 
     #[test]
