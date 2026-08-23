@@ -22,13 +22,16 @@ This repository is prepared for later codegraph-based structure tracking.
 - `apps/orally-desktop/src-tauri/src/main.rs` exposes Tauri config commands and
   owns the tray icon/window lifecycle, Windows dictation hotkey service, overlay
   state, ASR call, post-processing, and paste insertion.
-- `apps/orally-desktop/ui/` contains the Material-style settings frontend.
+- `apps/orally-desktop/ui/` contains the desktop settings frontend.
 - `apps/orally-desktop/ui/overlay.html` contains the bottom dictation prompt and
   stop button.
 - `scripts/package-portable.ps1` builds the release desktop app and assembles a
   portable Windows folder with executable-directory `config.toml`.
 - `apps/windows-ime/src/lib.rs` contains the placeholder Windows TSF DLL exports.
-- `product/` contains product definition and implementation planning.
+- `docs/product/` contains product definition, implementation planning, and
+  future product grilling notes.
+- `docs/engineering/` contains human-readable engineering notes.
+- `.agents/` contains agent-only setup, skill, and tooling context.
 
 ## Tracking Intent
 

@@ -21,7 +21,8 @@
   button.
 - Completed: portable Windows app layout using executable-directory
   `config.toml`.
-- Completed: configurable Windows hotkey presets loaded from local config.
+- Replace the prototype hotkey preset list with direct shortcut capture,
+  immediate conflict validation, and registration without restarting.
 - Completed: tray menu controls for start/stop dictation and pause/resume
   hotkey.
 - Completed: OpenAI-compatible AI post-processing provider.
@@ -51,15 +52,15 @@
 - Kotlin `InputMethodService`.
 - Press-and-hold microphone key.
 - Provider configuration.
-- Dictionary and prompt profile support.
+- Workflow support.
 - Optional floating control.
 
 ## Phase 3: Local-First Power Features
 
 - Local Whisper or sherpa-onnx provider.
 - Privacy mode enforcement.
-- App-specific prompt profiles.
-- Personal dictionary import/export.
+- App-specific Workflow selection.
+- Optional personal dictionary and import/export, deferred from the Windows MVP.
 - Local encrypted backup.
 
 ## Phase 4: Cross-Platform Shells
@@ -73,6 +74,6 @@
 
 - Folder sync.
 - WebDAV sync.
-- Prompt and dictionary conflict resolution.
+- Prompt module conflict resolution.
 - Provider plugin API.
 - Codegraph-assisted architecture tracking.

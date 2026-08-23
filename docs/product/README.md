@@ -23,9 +23,8 @@ layer:
 ## Product Principles
 
 - Input first: speaking into the current text field should be the primary path.
-- Local first: history, prompts, dictionaries, and settings stay local by default.
-- User controlled: ASR providers, LLM providers, prompts, and dictionaries are
-  configurable.
+- Local first: history, prompts, and settings stay local by default.
+- User controlled: ASR providers, LLM providers, and prompts are configurable.
 - Minimal permissions: each permission must map to a clear feature.
 - Platform native: shared core behavior, native input integration per operating
   system.
@@ -36,8 +35,7 @@ layer:
 - Voice activity detection abstraction.
 - ASR provider abstraction.
 - LLM/text post-processing abstraction.
-- Custom prompt profiles.
-- Personal dictionary.
+- Adjustable Workflows composed from reusable Modules.
 - Local history.
 - Privacy mode that disables external requests.
 - Current-cursor insertion with clipboard fallback.
@@ -64,7 +62,7 @@ text insertion.
 
 For the first portable Windows build, Orally stays a normal background tray app
 rather than registering as an input method. Portable mode is activated by placing
-`config.toml` beside `Orally.exe`; this keeps API settings, hotkey presets, and
+`config.toml` beside `Orally.exe`; this keeps API settings, shortcut configuration, and
 output behavior local to the portable folder.
 
 ## Differentiation
@@ -79,3 +77,6 @@ Compared with closed dictation tools, Orally should focus on:
 - Clear permission boundaries.
 - Optional WebDAV, iCloud Drive, or OneDrive sync without a required account
   system.
+
+A personal dictionary is intentionally outside the Windows MVP and may be
+revisited after Workflows and reusable Modules are validated.

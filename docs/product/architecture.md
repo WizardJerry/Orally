@@ -7,7 +7,7 @@ Orally should be built as a shared Rust core with platform-native shells.
 ```text
 platform trigger -> audio capture -> VAD -> ASR -> postprocess -> insert text
                                              |        |
-                                             |        +-> dictionary/context
+                                             |        +-> workflow/modules
                                              +----------> local history
 ```
 
@@ -28,8 +28,9 @@ apps/
   orally-desktop/    Tauri tray app and settings UI
   windows-ime/       future TSF text service DLL
   android/           future Kotlin InputMethodService
-product/             product and planning documents
-docs/                code structure notes
+docs/product/        product definition, planning, and product grilling notes
+docs/engineering/    human-readable implementation and platform notes
+.agents/             agent-only setup, skill, and tooling context
 ```
 
 ## Platform Plan
@@ -143,7 +144,7 @@ configuration used by the CLI:
 
 - ASR provider preset, base URL, model, request protocol, optional local API
   key, API key environment variable, language hint, and ASR prompt.
-- Hotkey preset, default recording duration, paste delay, output locale, default
+- Global shortcut, default recording duration, paste delay, output locale, default
   insertion behavior, and change display.
 - Raw transcript mode and privacy/storage notes.
 
@@ -165,10 +166,10 @@ running executable, Orally uses it before the normal user config path. This lets
 the Windows portable build run as a background app without registering as an
 input method and without writing settings into `%APPDATA%`.
 
-The first hotkey customization surface is preset-based. The selected preset is
-stored in `[hotkey].preset`, read when the tray process starts, and used for the
-global Win32 hotkey registration. Changing the preset requires restarting the
-tray app.
+The target Windows MVP captures a user-selected key combination directly,
+validates conflicts when it is saved, and registers it immediately without an
+application restart. The current prototype's `[hotkey].preset` setting is a
+temporary implementation that must be replaced.
 
 The tray process can append local history through `orally-storage`. By default
 history is stored as `history.jsonl` next to the active config file and contains

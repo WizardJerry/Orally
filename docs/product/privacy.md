@@ -16,8 +16,7 @@ Orally should default to local storage and explicit provider configuration.
 | Data | Default | Sync |
 | --- | --- | --- |
 | Settings | Local config | Optional |
-| Prompt profiles | Local database or files | Optional |
-| Dictionary | Local database | Optional |
+| Workflows and Modules | Portable database and TOML files | Optional |
 | History | Local SQLite | Off by default |
 | Audio cache | Temporary only | Never by default |
 | API keys | System secret store | Never |
@@ -49,7 +48,7 @@ preservation of images, files, and rich clipboard formats remains future work.
 | Clipboard | Optional | Fallback insertion path. |
 | Android overlay | Optional | Floating input control. |
 | Android accessibility | Optional | Enhanced insertion in difficult apps. |
-| Start at login | Optional | Always-ready dictation. |
+| Start at login | Not in Windows MVP | May be reconsidered only with explicit creation and cleanup of the external startup entry. |
 
 Each permission request should explain the feature it enables and the degraded
 behavior when it is disabled.
@@ -60,5 +59,5 @@ The first sync implementation should avoid a proprietary account system:
 
 - Folder sync for iCloud Drive, OneDrive, Dropbox, or Syncthing.
 - WebDAV for self-hosted users.
-- End-to-end encrypted bundles for settings, prompts, and dictionaries.
+- End-to-end encrypted bundles for settings and prompts.
 - History sync disabled by default, with favorites-only sync as a safer option.
