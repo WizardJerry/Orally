@@ -5,6 +5,12 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::PathBuf;
 
+pub const ALIYUN_OPENAI_COMPAT_BASE_URL: &str =
+    "https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
+pub const OPENAI_COMPAT_API_KEY_ENV: &str = "ORALLY_OPENAI_COMPAT_API_KEY";
+pub const ALIYUN_ASR_MODEL: &str = "qwen3-asr-flash";
+pub const ALIYUN_POSTPROCESS_MODEL: &str = "deepseek-v4-flash-0731";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
@@ -35,16 +41,23 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    pub fn dashscope_preset() -> Self {
+    pub fn aliyun_openai_preset() -> Self {
         Self {
             asr: AsrConfig {
-                base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
-                model: "qwen3-asr-flash".to_string(),
+                base_url: ALIYUN_OPENAI_COMPAT_BASE_URL.to_string(),
+                model: ALIYUN_ASR_MODEL.to_string(),
                 protocol: "chat-audio".to_string(),
                 api_key: None,
-                api_key_env: "DASHSCOPE_API_KEY".to_string(),
+                api_key_env: OPENAI_COMPAT_API_KEY_ENV.to_string(),
                 language: None,
                 prompt: None,
+            },
+            postprocess: PostprocessConfig {
+                mode: "llm".to_string(),
+                base_url: ALIYUN_OPENAI_COMPAT_BASE_URL.to_string(),
+                model: ALIYUN_POSTPROCESS_MODEL.to_string(),
+                api_key_env: OPENAI_COMPAT_API_KEY_ENV.to_string(),
+                ..PostprocessConfig::default()
             },
             output: OutputConfig {
                 locale: "zh-CN".to_string(),
@@ -114,11 +127,11 @@ pub struct AsrConfig {
 impl Default for AsrConfig {
     fn default() -> Self {
         Self {
-            base_url: "https://api.openai.com/v1".to_string(),
-            model: String::new(),
-            protocol: "auto".to_string(),
+            base_url: ALIYUN_OPENAI_COMPAT_BASE_URL.to_string(),
+            model: ALIYUN_ASR_MODEL.to_string(),
+            protocol: "chat-audio".to_string(),
             api_key: None,
-            api_key_env: "ORALLY_ASR_API_KEY".to_string(),
+            api_key_env: OPENAI_COMPAT_API_KEY_ENV.to_string(),
             language: None,
             prompt: None,
         }
@@ -143,12 +156,12 @@ impl Default for PostprocessConfig {
     fn default() -> Self {
         Self {
             mode: "builtin".to_string(),
-            base_url: "https://api.openai.com/v1".to_string(),
-            model: String::new(),
+            base_url: ALIYUN_OPENAI_COMPAT_BASE_URL.to_string(),
+            model: ALIYUN_POSTPROCESS_MODEL.to_string(),
             api_key: None,
-            api_key_env: "ORALLY_LLM_API_KEY".to_string(),
-            system_prompt: "You are Orally's dictation postprocessor. Clean speech-to-text output while preserving the user's meaning, intent, and language. Remove filler words, false starts, and repeated fragments. Add natural punctuation and lightweight formatting when it is clearly implied. Return only the final text, with no explanations, markdown, quotes, or labels.".to_string(),
-            user_template: "Locale: {{locale}}\nTranscript:\n{{transcript}}\n\nRewrite the transcript into polished text suitable for direct insertion. Preserve names, product terms, code identifiers, and mixed-language phrases exactly when they look intentional.".to_string(),
+            api_key_env: OPENAI_COMPAT_API_KEY_ENV.to_string(),
+            system_prompt: "You are Orally's AI postprocessor for raw speech-to-text transcripts. Produce text that is ready to paste into the user's active app. Preserve the speaker's meaning, intent, language, names, product terms, URLs, and code identifiers. Remove filler words, repeated fragments, false starts, and self-corrections unless they change the meaning. Add only punctuation and lightweight structure that are clearly implied by the transcript. Do not invent facts, explanations, headings, labels, quotes, or markdown fences. Return only the final text.".to_string(),
+            user_template: "Locale: {{locale}}\nTask: cleanup\nTranscript:\n{{transcript}}\n\nClean the transcript into polished text in the original language. Keep normal prose unless the speaker explicitly asks for a list, translation, or another format.".to_string(),
             fallback_to_builtin: true,
         }
     }
@@ -246,7 +259,7 @@ impl Default for PrivacyConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderPreset {
-    DashScope,
+    AliyunOpenAi,
     OpenRouter,
     OpenAi,
 }
@@ -254,7 +267,7 @@ pub enum ProviderPreset {
 impl ProviderPreset {
     pub fn parse(value: &str) -> Result<Self, ConfigError> {
         match value {
-            "dashscope" | "aliyun" | "bailian" => Ok(Self::DashScope),
+            "aliyun-openai" | "aliyun" | "bailian" | "openai-compatible" => Ok(Self::AliyunOpenAi),
             "openrouter" => Ok(Self::OpenRouter),
             "openai" => Ok(Self::OpenAi),
             other => Err(ConfigError::InvalidPreset(other.to_string())),
@@ -263,7 +276,7 @@ impl ProviderPreset {
 
     pub fn config(&self) -> AppConfig {
         match self {
-            Self::DashScope => AppConfig::dashscope_preset(),
+            Self::AliyunOpenAi => AppConfig::aliyun_openai_preset(),
             Self::OpenRouter => AppConfig::openrouter_preset(),
             Self::OpenAi => AppConfig::openai_preset(),
         }
@@ -467,7 +480,7 @@ fn default_input_mode() -> String {
 }
 
 fn default_auto_stop_enabled() -> bool {
-    true
+    false
 }
 
 fn default_min_record_ms() -> u64 {
@@ -524,11 +537,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dashscope_preset_uses_dashscope_env_name() {
-        let config = AppConfig::dashscope_preset();
+    fn aliyun_openai_preset_uses_openai_compatible_defaults() {
+        let config = AppConfig::aliyun_openai_preset();
 
-        assert_eq!(config.asr.api_key_env, "DASHSCOPE_API_KEY");
+        assert_eq!(config.asr.base_url, ALIYUN_OPENAI_COMPAT_BASE_URL);
+        assert_eq!(config.asr.api_key_env, OPENAI_COMPAT_API_KEY_ENV);
         assert_eq!(config.asr.protocol, "chat-audio");
+        assert_eq!(config.postprocess.mode, "llm");
+        assert_eq!(config.postprocess.model, ALIYUN_POSTPROCESS_MODEL);
+        assert_eq!(config.postprocess.api_key_env, OPENAI_COMPAT_API_KEY_ENV);
     }
 
     #[test]
@@ -538,6 +555,14 @@ mod tests {
         let parsed: AppConfig = toml::from_str(&text).expect("config should deserialize");
 
         assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn automatic_stop_is_disabled_by_default() {
+        let config = AppConfig::default();
+
+        assert_eq!(config.audio.input_mode, "toggle");
+        assert!(!config.audio.auto_stop_enabled);
     }
 
     #[test]

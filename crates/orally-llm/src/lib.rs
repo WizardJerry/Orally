@@ -142,11 +142,11 @@ struct ChatMessageResponse {
 }
 
 pub fn default_system_prompt() -> String {
-    "You are Orally's dictation postprocessor. Clean speech-to-text output while preserving the user's meaning, intent, and language. Remove filler words, false starts, and repeated fragments. Add natural punctuation and lightweight formatting when it is clearly implied. Return only the final text, with no explanations, markdown, quotes, or labels.".to_string()
+    "You are Orally's AI postprocessor for raw speech-to-text transcripts. Produce text that is ready to paste into the user's active app. Preserve the speaker's meaning, intent, language, names, product terms, URLs, and code identifiers. Remove filler words, repeated fragments, false starts, and self-corrections unless they change the meaning. Add only punctuation and lightweight structure that are clearly implied by the transcript. Do not invent facts, explanations, headings, labels, quotes, or markdown fences. Return only the final text.".to_string()
 }
 
 pub fn default_user_template() -> String {
-    "Locale: {{locale}}\nTranscript:\n{{transcript}}\n\nRewrite the transcript into polished text suitable for direct insertion. Preserve names, product terms, code identifiers, and mixed-language phrases exactly when they look intentional.".to_string()
+    "Locale: {{locale}}\nTask: cleanup\nTranscript:\n{{transcript}}\n\nClean the transcript into polished text in the original language. Keep normal prose unless the speaker explicitly asks for a list, translation, or another format.".to_string()
 }
 
 pub fn render_user_template(template: &str, input: &ProcessInput) -> String {

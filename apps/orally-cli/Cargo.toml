@@ -11,6 +11,7 @@ orally-audio = { path = "../../crates/orally-audio" }
 orally-asr = { path = "../../crates/orally-asr" }
 orally-config = { path = "../../crates/orally-config" }
 orally-core = { path = "../../crates/orally-core" }
+orally-llm = { path = "../../crates/orally-llm" }
 orally-windows = { path = "../../crates/orally-windows" }
 
 [[bin]]

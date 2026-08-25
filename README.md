@@ -18,9 +18,10 @@ This repository currently contains:
   runs it through the post-processing pipeline, plus an audio recording command.
 - `apps/orally-desktop`: a Tauri desktop shell with a Windows tray icon and a
   Material-style settings UI backed by the local TOML config.
-- `product`: product definition, architecture notes, privacy model, and roadmap.
-- `docs/codegraph.md`: code structure notes intended to help future codegraph
-  indexing and review.
+- `docs/product`: product definition, architecture notes, privacy model,
+  roadmap, and future product grilling notes.
+- `docs/engineering`: human-readable implementation and platform notes.
+- `.agents`: agent-only setup, skill, and tooling context.
 
 ## Try It
 
@@ -34,7 +35,7 @@ cargo run -p orally-cli -- transcribe --file orally-recording.wav --raw
 cargo run -p orally-cli -- dictate --seconds 3 --show-changes
 cargo run -p orally-cli -- dictate --seconds 3 --insert --paste-delay-ms 1200
 cargo run -p orally-cli -- listen --paste-delay-ms 300
-cargo run -p orally-cli -- config init --provider dashscope
+cargo run -p orally-cli -- config init --provider aliyun-openai
 cargo run -p orally-cli -- config set output.paste_delay_ms 300
 cargo run -p orally-cli -- config show
 cargo run -p orally-desktop
@@ -76,17 +77,19 @@ $env:ORALLY_ASR_PROTOCOL="openai-transcriptions"
 $env:ORALLY_ASR_BASE_URL="https://api.openai.com/v1"
 ```
 
-For Alibaba Cloud Model Studio/DashScope Qwen ASR:
+For Alibaba Cloud Model Studio through its OpenAI-compatible endpoint:
 
 ```powershell
-$env:ORALLY_ASR_API_KEY="..."
-$env:ORALLY_ASR_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
+$env:ORALLY_ASR_API_KEY=$env:ORALLY_OPENAI_COMPAT_API_KEY
+$env:ORALLY_ASR_BASE_URL="https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 $env:ORALLY_ASR_MODEL="qwen3-asr-flash"
 $env:ORALLY_ASR_PROTOCOL="chat-audio"
 cargo run -p orally-cli -- transcribe --file orally-recording.wav
 ```
 
-DashScope chat audio requests use `input_audio.data` with a WAV data URL.
+Some OpenAI-compatible chat audio models, including `qwen3-asr-flash`, expect
+`input_audio.data` as a WAV data URL. Orally selects that request shape from the
+model name and compatible endpoint.
 
 ## Configuration
 
@@ -96,12 +99,12 @@ Windows. Set `ORALLY_CONFIG` to use a custom path.
 Initialize a provider preset:
 
 ```powershell
-cargo run -p orally-cli -- config init --provider dashscope
+cargo run -p orally-cli -- config init --provider aliyun-openai
 ```
 
 Supported presets:
 
-- `dashscope`
+- `aliyun-openai`
 - `openrouter`
 - `openai`
 
@@ -116,13 +119,10 @@ Update one config value:
 ```powershell
 cargo run -p orally-cli -- config set asr.model qwen3-asr-flash
 cargo run -p orally-cli -- config set asr.api_key "sk-..."
-cargo run -p orally-cli -- config set asr.api_key_env DASHSCOPE_API_KEY
+cargo run -p orally-cli -- config set asr.api_key_env ORALLY_OPENAI_COMPAT_API_KEY
 cargo run -p orally-cli -- config set postprocess.mode llm
-cargo run -p orally-cli -- config set postprocess.model gpt-4o-mini
+cargo run -p orally-cli -- config set postprocess.model deepseek-v4-flash-0731
 cargo run -p orally-cli -- config set postprocess.fallback_to_builtin true
-cargo run -p orally-cli -- config set audio.input_mode hold
-cargo run -p orally-cli -- config set audio.auto_stop_enabled true
-cargo run -p orally-cli -- config set audio.silence_timeout_ms 1200
 cargo run -p orally-cli -- config set output.paste_delay_ms 300
 cargo run -p orally-cli -- config set output.restore_clipboard true
 cargo run -p orally-cli -- config set output.show_changes true
@@ -166,10 +166,10 @@ Common keys:
 - `privacy.history_path`
 
 For privacy, prefer storing the API key environment variable name and keeping
-the key in your shell or OS environment. For DashScope, set:
+the key in your shell or OS environment. For the OpenAI-compatible preset, set:
 
 ```powershell
-$env:DASHSCOPE_API_KEY="..."
+$env:ORALLY_OPENAI_COMPAT_API_KEY="..."
 ```
 
 If you want the desktop app to run without a pre-set environment variable, the
@@ -194,35 +194,18 @@ bottom of the screen. Press the same hotkey again, or click `停止`, to stop
 recording, transcribe, post-process, and paste the final text back into the
 window that was active when recording started.
 
-The desktop hotkey supports three input modes through `audio.input_mode`:
-
-- `toggle`: press once to start and press again to stop.
-- `hold`: hold the hotkey while speaking and release it to transcribe.
-- `fixed-window`: press once and let Orally stop after `audio.dictate_seconds`.
-
-When `audio.auto_stop_enabled = true`, Orally also watches recent voice activity
-and stops automatically after `audio.silence_timeout_ms` of silence, bounded by
-`audio.min_record_ms` and `audio.max_record_ms`.
+The desktop app currently uses Toggle Mode exclusively. Silence, key release,
+fixed duration, and maximum duration do not stop a recording; only another
+hotkey press or an explicit stop action ends it. Legacy automatic-stop fields
+remain in the config schema for compatibility but are ignored by the desktop
+runtime.
 
 The tray menu can also start or stop dictation, pause or resume the hotkey, open
 settings, and quit Orally.
 
-Supported hotkey presets:
-
-- `ctrl-alt-space`
-- `ctrl-shift-space`
-- `alt-space`
-- `f9`
-- `f10`
-- `f11`
-- `f12`
-- `ctrl-alt-f9`
-- `ctrl-alt-f10`
-- `ctrl-alt-f11`
-- `ctrl-alt-f12`
-
-Hotkey changes are read when Orally starts, so restart the app after saving a new
-hotkey.
+The current prototype still exposes a fixed hotkey preset list and reads changes
+only at startup. The target Windows MVP replaces this with direct shortcut
+capture, immediate conflict validation, and registration without restarting.
 
 The settings UI can edit:
 
@@ -230,7 +213,7 @@ The settings UI can edit:
   variable, language hint, and ASR prompt.
 - AI post-processing mode, OpenAI-compatible LLM endpoint/model/API key, system
   prompt, and user template.
-- Hotkey preset, default recording duration, paste delay, output locale, default
+- Global shortcut, default recording duration, paste delay, output locale, default
   insert behavior, change display, and clipboard restoration.
 - Raw transcript mode, external-request privacy switch, and local history.
 
@@ -245,9 +228,9 @@ By default Orally uses the built-in local cleaner. Set:
 ```toml
 [postprocess]
 mode = "llm"
-base_url = "https://api.openai.com/v1"
-model = "gpt-4o-mini"
-api_key_env = "ORALLY_LLM_API_KEY"
+base_url = "https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+model = "deepseek-v4-flash-0731"
+api_key_env = "ORALLY_OPENAI_COMPAT_API_KEY"
 ```
 
 The AI postprocessor sends the ASR transcript to an OpenAI-compatible
@@ -300,7 +283,7 @@ Run `Orally.exe` from that folder to keep settings local to the portable
 directory. You can also create the same executable-directory config from the CLI:
 
 ```powershell
-cargo run -p orally-cli -- config init --provider dashscope --portable
+cargo run -p orally-cli -- config init --provider aliyun-openai --portable
 ```
 
 The packaging script does not overwrite an existing `config.toml`; it always

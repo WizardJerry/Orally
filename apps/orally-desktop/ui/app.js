@@ -23,13 +23,6 @@ const fields = {
   pasteDelayMs: document.querySelector("#output-paste-delay-ms"),
   restoreClipboard: document.querySelector("#output-restore-clipboard"),
   restoreClipboardDelayMs: document.querySelector("#output-restore-clipboard-delay-ms"),
-  dictateSeconds: document.querySelector("#audio-dictate-seconds"),
-  inputMode: document.querySelector("#audio-input-mode"),
-  autoStopEnabled: document.querySelector("#audio-auto-stop-enabled"),
-  minRecordMs: document.querySelector("#audio-min-record-ms"),
-  maxRecordMs: document.querySelector("#audio-max-record-ms"),
-  silenceTimeoutMs: document.querySelector("#audio-silence-timeout-ms"),
-  silenceThreshold: document.querySelector("#audio-silence-threshold"),
   recordOutput: null,
   hotkeyPreset: document.querySelector("#hotkey-preset"),
   providerPreset: document.querySelector("#provider-preset"),
@@ -47,6 +40,12 @@ const documentCarousel = document.querySelector(".document-carousel");
 const carouselProgress = document.querySelector("#carousel-progress");
 const pipelineTitle = document.querySelector("#pipeline-title");
 
+const ALIYUN_OPENAI_BASE_URL =
+  "https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
+const OPENAI_COMPAT_API_KEY_ENV = "ORALLY_OPENAI_COMPAT_API_KEY";
+const ALIYUN_ASR_MODEL = "qwen3-asr-flash";
+const ALIYUN_POSTPROCESS_MODEL = "deepseek-v4-flash-0731";
+
 const shortcutDefaults = {
   pause: "Ctrl + Shift + P",
   addModel: "Ctrl + M",
@@ -57,22 +56,24 @@ const shortcutDefaults = {
 
 const previewConfig = {
   asr: {
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    model: "qwen3-asr-flash",
+    base_url: ALIYUN_OPENAI_BASE_URL,
+    model: ALIYUN_ASR_MODEL,
     protocol: "chat-audio",
     api_key: null,
-    api_key_env: "DASHSCOPE_API_KEY",
+    api_key_env: OPENAI_COMPAT_API_KEY_ENV,
     language: "zh",
     prompt: "请保持专有名词和产品名原文。",
   },
   postprocess: {
     mode: "llm",
-    base_url: "https://api.openai.com/v1",
-    model: "gpt-4.1-mini",
+    base_url: ALIYUN_OPENAI_BASE_URL,
+    model: ALIYUN_POSTPROCESS_MODEL,
     api_key: null,
-    api_key_env: "ORALLY_LLM_API_KEY",
-    system_prompt: "Clean dictation output while preserving the user's meaning.",
-    user_template: "Locale: {{locale}}\nTranscript:\n{{transcript}}\n\nRewrite the transcript.",
+    api_key_env: OPENAI_COMPAT_API_KEY_ENV,
+    system_prompt:
+      "You are Orally's AI postprocessor for raw speech-to-text transcripts. Produce text that is ready to paste into the user's active app. Preserve the speaker's meaning, intent, language, names, product terms, URLs, and code identifiers. Remove filler words, repeated fragments, false starts, and self-corrections unless they change the meaning. Add only punctuation and lightweight structure that are clearly implied by the transcript. Do not invent facts, explanations, headings, labels, quotes, or markdown fences. Return only the final text.",
+    user_template:
+      "Locale: {{locale}}\nTask: cleanup\nTranscript:\n{{transcript}}\n\nClean the transcript into polished text in the original language. Keep normal prose unless the speaker explicitly asks for a list, translation, or another format.",
     fallback_to_builtin: true,
   },
   output: {
@@ -88,7 +89,7 @@ const previewConfig = {
     dictate_seconds: 3,
     record_output: "orally-recording.wav",
     input_mode: "toggle",
-    auto_stop_enabled: true,
+    auto_stop_enabled: false,
     min_record_ms: 450,
     max_record_ms: 120000,
     silence_timeout_ms: 1200,
@@ -114,7 +115,7 @@ const documents = [
     name: "会议转写.toml",
     updated: "2 min ago",
     nodes: 3,
-    model: "qwen3-asr-flash",
+    model: ALIYUN_ASR_MODEL,
     status: "启用",
   },
   {
@@ -152,7 +153,7 @@ function optional(value) {
 
 function providerLabel(config = currentConfig) {
   const baseUrl = config?.asr?.base_url?.toLowerCase() ?? "";
-  if (baseUrl.includes("dashscope")) return "阿里云百炼";
+  if (baseUrl.includes("maas.aliyuncs.com")) return "阿里云百炼（OpenAI兼容）";
   if (baseUrl.includes("openrouter")) return "OpenRouter";
   if (baseUrl.includes("openai")) return "OpenAI-compatible";
   return "Custom";
@@ -160,19 +161,24 @@ function providerLabel(config = currentConfig) {
 
 function selectProviderPreset(config) {
   const baseUrl = config?.asr?.base_url?.toLowerCase() ?? "";
-  if (baseUrl.includes("dashscope")) return "dashscope";
+  if (baseUrl.includes("maas.aliyuncs.com")) return "aliyun-openai";
   if (baseUrl.includes("openrouter")) return "openrouter";
   if (baseUrl.includes("openai")) return "openai";
   return "custom";
 }
 
 function applyPreset(preset) {
-  if (preset === "dashscope") {
-    fields.baseUrl.value = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-    fields.model.value = "qwen3-asr-flash";
+  if (preset === "aliyun-openai") {
+    fields.baseUrl.value = ALIYUN_OPENAI_BASE_URL;
+    fields.model.value = ALIYUN_ASR_MODEL;
     fields.protocol.value = "chat-audio";
     fields.apiKey.value = "";
-    fields.apiKeyEnv.value = "DASHSCOPE_API_KEY";
+    fields.apiKeyEnv.value = OPENAI_COMPAT_API_KEY_ENV;
+    fields.postprocessMode.value = "llm";
+    fields.postprocessBaseUrl.value = ALIYUN_OPENAI_BASE_URL;
+    fields.postprocessModel.value = ALIYUN_POSTPROCESS_MODEL;
+    fields.postprocessApiKey.value = "";
+    fields.postprocessApiKeyEnv.value = OPENAI_COMPAT_API_KEY_ENV;
   }
 
   if (preset === "openrouter") {
@@ -206,10 +212,11 @@ function fillForm(config) {
   fields.language.value = config.asr.language ?? "";
   fields.prompt.value = config.asr.prompt ?? "";
   fields.postprocessMode.value = config.postprocess?.mode ?? "builtin";
-  fields.postprocessBaseUrl.value = config.postprocess?.base_url ?? "https://api.openai.com/v1";
-  fields.postprocessModel.value = config.postprocess?.model ?? "";
+  fields.postprocessBaseUrl.value = config.postprocess?.base_url ?? ALIYUN_OPENAI_BASE_URL;
+  fields.postprocessModel.value = config.postprocess?.model ?? ALIYUN_POSTPROCESS_MODEL;
   fields.postprocessApiKey.value = config.postprocess?.api_key ?? "";
-  fields.postprocessApiKeyEnv.value = config.postprocess?.api_key_env ?? "ORALLY_LLM_API_KEY";
+  fields.postprocessApiKeyEnv.value =
+    config.postprocess?.api_key_env ?? OPENAI_COMPAT_API_KEY_ENV;
   fields.postprocessSystemPrompt.value = config.postprocess?.system_prompt ?? "";
   fields.postprocessUserTemplate.value = config.postprocess?.user_template ?? "";
   fields.postprocessFallbackToBuiltin.checked = config.postprocess?.fallback_to_builtin ?? true;
@@ -220,13 +227,6 @@ function fillForm(config) {
   fields.pasteDelayMs.value = config.output.paste_delay_ms;
   fields.restoreClipboard.checked = config.output.restore_clipboard ?? true;
   fields.restoreClipboardDelayMs.value = config.output.restore_clipboard_delay_ms ?? 250;
-  fields.dictateSeconds.value = config.audio.dictate_seconds;
-  fields.inputMode.value = config.audio.input_mode ?? "toggle";
-  fields.autoStopEnabled.checked = config.audio.auto_stop_enabled ?? true;
-  fields.minRecordMs.value = config.audio.min_record_ms ?? 450;
-  fields.maxRecordMs.value = config.audio.max_record_ms ?? 120000;
-  fields.silenceTimeoutMs.value = config.audio.silence_timeout_ms ?? 1200;
-  fields.silenceThreshold.value = config.audio.silence_threshold ?? 0.02;
   fields.hotkeyPreset.value = config.hotkey.preset;
   fields.providerPreset.value = selectProviderPreset(config);
   fields.allowExternalRequests.checked = config.privacy?.allow_external_requests ?? true;
@@ -268,14 +268,14 @@ function collectForm() {
       restore_clipboard_delay_ms: Number(fields.restoreClipboardDelayMs.value || 250),
     },
     audio: {
-      dictate_seconds: Number(fields.dictateSeconds.value || 3),
+      dictate_seconds: currentConfig?.audio?.dictate_seconds ?? 3,
       record_output: currentConfig?.audio?.record_output ?? "orally-recording.wav",
-      input_mode: fields.inputMode.value,
-      auto_stop_enabled: fields.autoStopEnabled.checked,
-      min_record_ms: Number(fields.minRecordMs.value || 450),
-      max_record_ms: Number(fields.maxRecordMs.value || 120000),
-      silence_timeout_ms: Number(fields.silenceTimeoutMs.value || 1200),
-      silence_threshold: Number(fields.silenceThreshold.value || 0.02),
+      input_mode: "toggle",
+      auto_stop_enabled: false,
+      min_record_ms: currentConfig?.audio?.min_record_ms ?? 450,
+      max_record_ms: currentConfig?.audio?.max_record_ms ?? 120000,
+      silence_timeout_ms: currentConfig?.audio?.silence_timeout_ms ?? 1200,
+      silence_threshold: currentConfig?.audio?.silence_threshold ?? 0.02,
     },
     hotkey: {
       preset: fields.hotkeyPreset.value,

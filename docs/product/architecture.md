@@ -96,9 +96,8 @@ audio content to:
 {base_url}/chat/completions
 ```
 
-OpenRouter audio input models use the chat audio protocol.
-
-DashScope Qwen ASR also uses the chat audio protocol, but expects
+OpenRouter audio input models use the chat audio protocol. Some
+OpenAI-compatible chat audio models, including `qwen3-asr-flash`, expect
 `input_audio.data` to be a data URL such as `data:audio/wav;base64,...`.
 
 The first CLI surfaces are:

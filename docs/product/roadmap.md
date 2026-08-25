@@ -33,7 +33,8 @@
 
 - Audio capture on Windows.
 - OpenAI-compatible ASR provider.
-- Chat-audio ASR provider for OpenRouter and DashScope Qwen ASR.
+- Chat-audio ASR provider for OpenAI-compatible audio models such as OpenRouter
+  audio models and `qwen3-asr-flash`.
 - Clipboard fallback insertion.
 - Press-to-talk global hotkey.
 - Completed: local history.

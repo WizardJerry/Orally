@@ -182,7 +182,7 @@
                 服务商预设
                 <select id="provider-preset">
                   <option value="custom">自定义</option>
-                  <option value="dashscope">阿里云百炼</option>
+                  <option value="aliyun-openai">阿里云百炼（OpenAI兼容）</option>
                   <option value="openrouter">OpenRouter</option>
                   <option value="openai">OpenAI-compatible</option>
                 </select>
@@ -266,18 +266,6 @@
                     <input id="output-locale" spellcheck="false" />
                   </label>
                   <label>
-                    录音秒数
-                    <input id="audio-dictate-seconds" type="number" min="1" max="120" />
-                  </label>
-                  <label>
-                    输入模式
-                    <select id="audio-input-mode">
-                      <option value="toggle">按一次开始，再按一次停止</option>
-                      <option value="hold">按住说话，松开整理</option>
-                      <option value="fixed-window">固定时长自动整理</option>
-                    </select>
-                  </label>
-                  <label>
                     粘贴延迟 ms
                     <input id="output-paste-delay-ms" type="number" min="0" max="5000" />
                   </label>
@@ -285,27 +273,7 @@
                     剪贴板恢复延迟 ms
                     <input id="output-restore-clipboard-delay-ms" type="number" min="0" max="5000" />
                   </label>
-                  <label>
-                    最短录音 ms
-                    <input id="audio-min-record-ms" type="number" min="0" max="10000" />
-                  </label>
-                  <label>
-                    最长录音 ms
-                    <input id="audio-max-record-ms" type="number" min="1000" max="600000" />
-                  </label>
-                  <label>
-                    静音判停 ms
-                    <input id="audio-silence-timeout-ms" type="number" min="250" max="10000" />
-                  </label>
-                  <label>
-                    静音阈值
-                    <input id="audio-silence-threshold" type="number" min="0.001" max="1" step="0.001" />
-                  </label>
                 </div>
-                <label class="switch-row">
-                  <span>启用静音自动停止</span>
-                  <input id="audio-auto-stop-enabled" type="checkbox" />
-                </label>
                 <label class="switch-row">
                   <span>输出原始转写</span>
                   <input id="output-raw" type="checkbox" />

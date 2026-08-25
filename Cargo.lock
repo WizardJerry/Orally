@@ -2276,6 +2276,7 @@ dependencies = [
  "orally-audio",
  "orally-config",
  "orally-core",
+ "orally-llm",
  "orally-windows",
 ]
 

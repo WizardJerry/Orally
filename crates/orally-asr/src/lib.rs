@@ -164,13 +164,14 @@ impl ChatAudioAsrConfig {
 
     fn audio_shape(&self) -> ChatAudioShape {
         let base_url = self.base_url.to_ascii_lowercase();
+        let model = self.model.to_ascii_lowercase();
         if base_url.contains("openrouter.ai") {
             ChatAudioShape::OpenRouter
-        } else if base_url.contains("dashscope.aliyuncs.com")
-            || base_url.contains("dashscope-intl.aliyuncs.com")
-            || base_url.contains("dashscope-us.aliyuncs.com")
+        } else if base_url.contains("maas.aliyuncs.com")
+            || base_url.contains("aliyuncs.com/compatible-mode")
+            || model.contains("qwen3-asr")
         {
-            ChatAudioShape::DashScope
+            ChatAudioShape::DataUrlOnly
         } else {
             ChatAudioShape::GenericSnake
         }
@@ -294,7 +295,7 @@ enum ChatContentPart {
         content_type: &'static str,
         input_audio: FormattedInputAudio,
     },
-    DashScopeInputAudio {
+    DataUrlOnlyInputAudio {
         #[serde(rename = "type")]
         content_type: &'static str,
         input_audio: DataUrlInputAudio,
@@ -321,7 +322,7 @@ struct DataUrlInputAudio {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChatAudioShape {
     OpenRouter,
-    DashScope,
+    DataUrlOnly,
     GenericSnake,
 }
 
@@ -473,7 +474,7 @@ fn chat_audio_part(audio_base64: String, shape: ChatAudioShape) -> ChatContentPa
                 format: "wav",
             },
         },
-        ChatAudioShape::DashScope => ChatContentPart::DashScopeInputAudio {
+        ChatAudioShape::DataUrlOnly => ChatContentPart::DataUrlOnlyInputAudio {
             content_type: "input_audio",
             input_audio: DataUrlInputAudio {
                 data: format!("data:audio/wav;base64,{audio_base64}"),
@@ -496,7 +497,7 @@ fn chat_content_parts(
 ) -> Vec<ChatContentPart> {
     let audio = chat_audio_part(audio_base64, shape);
 
-    if shape == ChatAudioShape::DashScope {
+    if shape == ChatAudioShape::DataUrlOnly {
         vec![audio]
     } else {
         vec![
@@ -587,12 +588,12 @@ mod tests {
     }
 
     #[test]
-    fn dashscope_chat_audio_uses_data_url_without_format_field() {
-        let part = chat_audio_part("abc".to_string(), ChatAudioShape::DashScope);
+    fn data_url_chat_audio_uses_data_url_without_format_field() {
+        let part = chat_audio_part("abc".to_string(), ChatAudioShape::DataUrlOnly);
         let value = serde_json::to_value(part).expect("part should serialize");
         let input_audio = value
             .get("input_audio")
-            .expect("DashScope should use input_audio");
+            .expect("data-url audio should use input_audio");
 
         assert_eq!(
             input_audio.get("data").and_then(|data| data.as_str()),
@@ -602,22 +603,33 @@ mod tests {
     }
 
     #[test]
-    fn dashscope_base_url_uses_dashscope_audio_shape() {
+    fn aliyun_openai_base_url_uses_data_url_audio_shape() {
         let config = ChatAudioAsrConfig::new(
-            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
             "key",
             "qwen3-asr-flash",
         );
 
-        assert_eq!(config.audio_shape(), ChatAudioShape::DashScope);
+        assert_eq!(config.audio_shape(), ChatAudioShape::DataUrlOnly);
     }
 
     #[test]
-    fn dashscope_chat_audio_sends_only_audio_content() {
+    fn qwen_asr_model_uses_data_url_audio_shape() {
+        let config = ChatAudioAsrConfig::new(
+            "https://api.example.com/compatible-mode/v1",
+            "key",
+            "qwen3-asr-flash",
+        );
+
+        assert_eq!(config.audio_shape(), ChatAudioShape::DataUrlOnly);
+    }
+
+    #[test]
+    fn data_url_chat_audio_sends_only_audio_content() {
         let parts = chat_content_parts(
             "Please transcribe".to_string(),
             "abc".to_string(),
-            ChatAudioShape::DashScope,
+            ChatAudioShape::DataUrlOnly,
         );
         let value = serde_json::to_value(parts).expect("parts should serialize");
         let items = value.as_array().expect("parts should be an array");

@@ -34,23 +34,24 @@ Copy-Item -LiteralPath $sourceExe -Destination $targetExe -Force
 
 $configTemplate = @'
 [asr]
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+base_url = "https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 model = "qwen3-asr-flash"
 protocol = "chat-audio"
-api_key_env = "DASHSCOPE_API_KEY"
+api_key_env = "ORALLY_OPENAI_COMPAT_API_KEY"
 
 [postprocess]
-mode = "builtin"
-base_url = "https://api.openai.com/v1"
-model = ""
-api_key_env = "ORALLY_LLM_API_KEY"
-system_prompt = "You are Orally's dictation postprocessor. Clean speech-to-text output while preserving the user's meaning. Return only the final text, with no explanations, markdown, quotes, or labels."
+mode = "llm"
+base_url = "https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+model = "deepseek-v4-flash-0731"
+api_key_env = "ORALLY_OPENAI_COMPAT_API_KEY"
+system_prompt = "You are Orally's AI postprocessor for raw speech-to-text transcripts. Produce text that is ready to paste into the user's active app. Preserve the speaker's meaning, intent, language, names, product terms, URLs, and code identifiers. Remove filler words, repeated fragments, false starts, and self-corrections unless they change the meaning. Add only punctuation and lightweight structure that are clearly implied by the transcript. Do not invent facts, explanations, headings, labels, quotes, or markdown fences. Return only the final text."
 user_template = """
 Locale: {{locale}}
+Task: cleanup
 Transcript:
 {{transcript}}
 
-Rewrite the transcript into polished text suitable for direct insertion.
+Clean the transcript into polished text in the original language. Keep normal prose unless the speaker explicitly asks for a list, translation, or another format.
 """
 
 [output]
@@ -65,6 +66,8 @@ restore_clipboard_delay_ms = 250
 [audio]
 dictate_seconds = 3
 record_output = "orally-recording.wav"
+input_mode = "toggle"
+auto_stop_enabled = false
 
 [hotkey]
 preset = "ctrl-alt-space"

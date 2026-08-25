@@ -4,6 +4,8 @@
   "version": "0.1.0",
   "identifier": "dev.orally.app",
   "build": {
+    "beforeDevCommand": "npm run ui:dev",
+    "devUrl": "http://localhost:1420",
     "frontendDist": "../ui"
   },
   "app": {
