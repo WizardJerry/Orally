@@ -1,0 +1,15 @@
+[package]
+name = "orally-speech"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+orally-asr = { path = "../orally-asr" }
+orally-core = { path = "../orally-core" }
+orally-llm = { path = "../orally-llm" }
+
+[lib]
+path = "src/lib.rs"

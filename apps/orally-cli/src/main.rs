@@ -1,7 +1,3 @@
-use orally_asr::{
-    ChatAudioAsrConfig, ChatAudioAsrProvider, OpenAiCompatibleAsrConfig,
-    OpenAiCompatibleAsrProvider,
-};
 use orally_audio::{
     encode_wav_pcm16, CpalAudioRecorder, CpalRecordingSession, RecordedAudio, RecordingConfig,
 };
@@ -9,11 +5,15 @@ use orally_config::{
     AppConfig, ProviderPreset, ALIYUN_OPENAI_COMPAT_BASE_URL, OPENAI_COMPAT_API_KEY_ENV,
 };
 use orally_core::{
-    AppContext, AsrProvider, AudioInput, BuiltInTextProcessor, DemoTextAsrProvider, DictionaryTerm,
-    InsertMode, MemoryInserter, OrallyPipeline, PostprocessPrompt, ProcessInput, TextInserter,
+    AppContext, AudioInput, BuiltInTextProcessor, DemoTextAsrProvider, DictionaryTerm, InsertMode,
+    MemoryInserter, OrallyError, OrallyPipeline, PostprocessPrompt, ProcessInput, TextInserter,
     TextProcessor, Transcript,
 };
 use orally_llm::{render_user_template, OpenAiChatPostprocessor, OpenAiChatPostprocessorConfig};
+use orally_speech::{
+    AsrProtocol, CredentialSource, RecognitionPlan, RefinementPlan, SpeechOutcome, SpeechPlan,
+    SpeechProcessor,
+};
 use orally_windows::{run_hotkey_loop, Hotkey, WindowsClipboardPasteInserter, WindowsPasteConfig};
 use std::env;
 use std::fs;
@@ -104,8 +104,8 @@ fn run_transcribe(args: &[String]) {
         }
     };
 
-    let api = match build_asr_provider(&options.asr) {
-        Ok(api) => api,
+    let speech = match build_speech_processor(&options.asr, &options.output) {
+        Ok(speech) => speech,
         Err(error) => {
             eprintln!("ASR configuration failed: {error}");
             std::process::exit(1);
@@ -120,8 +120,12 @@ fn run_transcribe(args: &[String]) {
         }
     };
 
-    match api.transcribe(AudioInput::wav(bytes)) {
-        Ok(transcript) => print_transcript(transcript, &options.output),
+    match speech.process(AudioInput::wav(bytes)) {
+        Ok(outcome) => print_speech_outcome(outcome, &options.output),
+        Err(error @ OrallyError::Processing(_)) => {
+            eprintln!("Post-processing failed: {error}");
+            std::process::exit(1);
+        }
         Err(error) => {
             eprintln!("Transcription failed: {error}");
             std::process::exit(1);
@@ -140,16 +144,20 @@ fn run_dictate(args: &[String]) {
         }
     };
 
-    let api = match build_asr_provider(&options.asr) {
-        Ok(api) => api,
+    let speech = match build_speech_processor(&options.asr, &options.output) {
+        Ok(speech) => speech,
         Err(error) => {
             eprintln!("ASR configuration failed: {error}");
             std::process::exit(1);
         }
     };
 
-    match dictate_once(api.as_ref(), options.seconds) {
-        Ok(transcript) => print_transcript(transcript, &options.output),
+    match dictate_once(&speech, options.seconds) {
+        Ok(outcome) => print_speech_outcome(outcome, &options.output),
+        Err(error @ OrallyError::Processing(_)) => {
+            eprintln!("Post-processing failed: {error}");
+            std::process::exit(1);
+        }
         Err(error) => {
             eprintln!("Dictation failed: {error}");
             std::process::exit(1);
@@ -169,8 +177,8 @@ fn run_listen(args: &[String]) {
     };
     options.dictate.output.insert = true;
 
-    let api = match build_asr_provider(&options.dictate.asr) {
-        Ok(api) => api,
+    let speech = match build_speech_processor(&options.dictate.asr, &options.dictate.output) {
+        Ok(speech) => speech,
         Err(error) => {
             eprintln!("ASR configuration failed: {error}");
             std::process::exit(1);
@@ -185,8 +193,15 @@ fn run_listen(args: &[String]) {
         if let Some(session) = active_recording.take() {
             eprintln!("Recording stopped. Sending audio to ASR provider...");
             let recorded = finish_recording(session)?;
-            let transcript = api.transcribe(recorded.audio)?;
-            print_transcript(transcript, &options.dictate.output);
+            let outcome = match speech.process(recorded.audio) {
+                Ok(outcome) => outcome,
+                Err(error @ OrallyError::Processing(_)) => {
+                    eprintln!("Post-processing failed: {error}");
+                    std::process::exit(1);
+                }
+                Err(error) => return Err(error),
+            };
+            print_speech_outcome(outcome, &options.dictate.output);
         } else {
             eprintln!("Recording started. Press Ctrl+Alt+Space again to stop.");
             active_recording = Some(CpalRecordingSession::start()?);
@@ -301,17 +316,14 @@ fn run_config_init(args: &[String]) {
     }
 }
 
-fn dictate_once(
-    api: &dyn AsrProvider,
-    seconds: u64,
-) -> Result<Transcript, orally_core::OrallyError> {
+fn dictate_once(speech: &SpeechProcessor, seconds: u64) -> Result<SpeechOutcome, OrallyError> {
     println!("Recording for {seconds} second(s), then sending audio to ASR provider...");
 
     let recorder = CpalAudioRecorder;
     let recorded = recorder.record_for(RecordingConfig::for_seconds(seconds))?;
     print_recording_metrics(&recorded);
 
-    api.transcribe(recorded.audio)
+    speech.process(recorded.audio)
 }
 
 fn finish_recording(
@@ -331,28 +343,9 @@ fn print_recording_metrics(recorded: &RecordedAudio) {
     );
 }
 
-fn print_transcript(transcript: Transcript, options: &OutputOptions) {
-    let (text, changes) = if options.raw {
-        (transcript.text, Vec::new())
-    } else {
-        let processor = BuiltInTextProcessor;
-        let processed = match processor.process(ProcessInput {
-            transcript,
-            context: AppContext {
-                locale: options.locale.clone(),
-                ..AppContext::default()
-            },
-            prompt: PostprocessPrompt::default(),
-            dictionary_terms: default_dictionary(),
-        }) {
-            Ok(processed) => processed,
-            Err(error) => {
-                eprintln!("Post-processing failed: {error}");
-                std::process::exit(1);
-            }
-        };
-        (processed.text, processed.changes)
-    };
+fn print_speech_outcome(outcome: SpeechOutcome, options: &OutputOptions) {
+    let text = outcome.final_text;
+    let changes = outcome.changes;
 
     if options.insert {
         eprintln!(
@@ -395,44 +388,27 @@ fn default_dictionary() -> Vec<DictionaryTerm> {
     ]
 }
 
-fn build_asr_provider(options: &AsrOptions) -> Result<Box<dyn AsrProvider>, String> {
-    let api_key = options
-        .api_key
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| env::var(&options.api_key_env).ok())
-        .ok_or_else(|| {
-            format!(
-                "missing API key: set asr.api_key or env var {}",
-                options.api_key_env
-            )
-        })?;
-    match options.resolved_protocol() {
-        AsrProtocol::OpenAiTranscriptions => {
-            let mut config = OpenAiCompatibleAsrConfig::new(
-                options.base_url.clone(),
-                api_key,
-                options.model.clone(),
-            );
-            config.language = options.language.clone();
-            config.prompt = options.prompt.clone();
-
-            OpenAiCompatibleAsrProvider::new(config)
-                .map(|provider| Box::new(provider) as Box<dyn AsrProvider>)
-                .map_err(|error| error.to_string())
-        }
-        AsrProtocol::ChatAudio => {
-            let mut config =
-                ChatAudioAsrConfig::new(options.base_url.clone(), api_key, options.model.clone());
-            config.language = options.language.clone();
-            config.prompt = options.prompt.clone();
-
-            ChatAudioAsrProvider::new(config)
-                .map(|provider| Box::new(provider) as Box<dyn AsrProvider>)
-                .map_err(|error| error.to_string())
-        }
-        AsrProtocol::Auto => unreachable!("auto protocol should resolve before provider build"),
-    }
+fn build_speech_processor(
+    options: &AsrOptions,
+    output: &OutputOptions,
+) -> Result<SpeechProcessor, String> {
+    SpeechProcessor::new(SpeechPlan {
+        recognition: RecognitionPlan {
+            base_url: options.base_url.clone(),
+            model: options.model.clone(),
+            credential: CredentialSource::new(options.api_key.clone(), options.api_key_env.clone()),
+            protocol: options.protocol,
+            language: options.language.clone(),
+            prompt: options.prompt.clone(),
+        },
+        refinement: if output.raw {
+            RefinementPlan::Raw
+        } else {
+            RefinementPlan::LocalBasicCleanup
+        },
+        locale: output.locale.clone(),
+    })
+    .map_err(|error| error.to_string())
 }
 
 fn run_process(args: &[String]) {
@@ -904,26 +880,6 @@ impl OutputOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AsrProtocol {
-    Auto,
-    OpenAiTranscriptions,
-    ChatAudio,
-}
-
-impl AsrProtocol {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "auto" => Ok(Self::Auto),
-            "openai-transcriptions" | "multipart" => Ok(Self::OpenAiTranscriptions),
-            "chat-audio" | "chat-completions" => Ok(Self::ChatAudio),
-            other => Err(format!(
-                "unknown ASR protocol: {other}; expected auto, openai-transcriptions, or chat-audio"
-            )),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AsrOptions {
     base_url: String,
@@ -942,7 +898,7 @@ impl AsrOptions {
             model: config.asr.model.clone(),
             api_key: config.asr.api_key.clone(),
             api_key_env: config.asr.api_key_env.clone(),
-            protocol: AsrProtocol::parse(&config.asr.protocol).unwrap_or(AsrProtocol::Auto),
+            protocol: config.asr.protocol.parse().unwrap_or(AsrProtocol::Auto),
             language: config.asr.language.clone(),
             prompt: config.asr.prompt.clone(),
         };
@@ -960,7 +916,7 @@ impl AsrOptions {
             options.api_key_env = value;
         }
         if let Ok(value) = env::var("ORALLY_ASR_PROTOCOL") {
-            if let Ok(protocol) = AsrProtocol::parse(&value) {
+            if let Ok(protocol) = value.parse() {
                 options.protocol = protocol;
             }
         }
@@ -980,7 +936,11 @@ impl AsrOptions {
             "--model" => self.model = value.to_string(),
             "--api-key" => self.api_key = Some(value.to_string()),
             "--api-key-env" => self.api_key_env = value.to_string(),
-            "--protocol" => self.protocol = AsrProtocol::parse(value)?,
+            "--protocol" => {
+                self.protocol = value
+                    .parse::<AsrProtocol>()
+                    .map_err(|error| error.to_string())?
+            }
             "--language" => self.language = Some(value.to_string()),
             "--prompt" => self.prompt = Some(value.to_string()),
             other => return Err(format!("unknown ASR option: {other}")),
@@ -1003,23 +963,6 @@ impl AsrOptions {
         }
 
         Ok(())
-    }
-
-    fn resolved_protocol(&self) -> AsrProtocol {
-        if self.protocol != AsrProtocol::Auto {
-            return self.protocol;
-        }
-
-        let base_url = self.base_url.to_ascii_lowercase();
-        let model = self.model.to_ascii_lowercase();
-        if base_url.contains("openrouter.ai")
-            || base_url.contains("maas.aliyuncs.com")
-            || model.contains("qwen3-asr")
-        {
-            AsrProtocol::ChatAudio
-        } else {
-            AsrProtocol::OpenAiTranscriptions
-        }
     }
 }
 

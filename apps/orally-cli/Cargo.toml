@@ -8,10 +8,10 @@ rust-version.workspace = true
 
 [dependencies]
 orally-audio = { path = "../../crates/orally-audio" }
-orally-asr = { path = "../../crates/orally-asr" }
 orally-config = { path = "../../crates/orally-config" }
 orally-core = { path = "../../crates/orally-core" }
 orally-llm = { path = "../../crates/orally-llm" }
+orally-speech = { path = "../../crates/orally-speech" }
 orally-windows = { path = "../../crates/orally-windows" }
 
 [[bin]]

@@ -2,6 +2,9 @@
 status: accepted
 ---
 
+[English](0003-share-provider-connections-across-workflows.md) |
+[简体中文](0003-share-provider-connections-across-workflows.zh-CN.md)
+
 # Share provider connections across Workflows
 
 Provider endpoints, protocols, and credentials are stored as reusable Service Connections rather than duplicated inside every Workflow. A Workflow references an ASR connection and an LLM connection while retaining its own model selections, ASR instructions, and Modules. This centralizes secret and endpoint changes without preventing Workflows from using different models or providers.

@@ -1,20 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use orally_asr::{
-    ChatAudioAsrConfig, ChatAudioAsrProvider, OpenAiCompatibleAsrConfig,
-    OpenAiCompatibleAsrProvider,
-};
 use orally_audio::CpalRecordingSession;
 use orally_config::AppConfig;
-use orally_core::{
-    AppContext, AsrProvider, BuiltInTextProcessor, DictionaryTerm, InsertMode, OrallyError,
-    ProcessInput, ProcessedText, TextInserter, TextProcessor, Transcript,
+use orally_core::{InsertMode, OrallyError, TextInserter};
+use orally_speech::{
+    AiPostprocessPlan, AsrProtocol, CredentialSource, RecognitionPlan, RefinementPlan, SpeechPlan,
+    SpeechProcessor,
 };
-use orally_llm::{OpenAiChatPostprocessor, OpenAiChatPostprocessorConfig};
 use orally_storage::{default_history_path, HistoryEntry, HistoryStore};
 use orally_windows::{run_hotkey_loop, Hotkey, WindowsClipboardPasteInserter, WindowsPasteConfig};
 use serde::Serialize;
-use std::env;
 use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -49,24 +44,6 @@ struct OverlayStatus {
     title: String,
     detail: String,
     can_stop: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AsrProtocol {
-    Auto,
-    OpenAiTranscriptions,
-    ChatAudio,
-}
-
-#[derive(Debug, Clone)]
-struct AsrOptions {
-    base_url: String,
-    model: String,
-    api_key: Option<String>,
-    api_key_env: String,
-    protocol: AsrProtocol,
-    language: Option<String>,
-    prompt: Option<String>,
 }
 
 #[tauri::command]
@@ -280,11 +257,10 @@ fn finish_dictation(app: &AppHandle, active: ActiveRecording) -> Result<(), Oral
         ));
     }
 
-    let asr_options = AsrOptions::from_config(&config);
-    let asr = build_asr_provider(&asr_options)?;
-    let transcript = asr.transcribe(recorded.audio)?;
-    let raw_text = transcript.text.clone();
-    let processed = process_text(transcript, &config)?;
+    let speech = build_speech_processor(&config)?;
+    let outcome = speech.process(recorded.audio)?;
+    let raw_text = outcome.raw_transcript.text;
+    let final_text = outcome.final_text;
 
     restore_foreground_window(active.target);
     let inserter = WindowsClipboardPasteInserter::new(WindowsPasteConfig {
@@ -292,9 +268,9 @@ fn finish_dictation(app: &AppHandle, active: ActiveRecording) -> Result<(), Oral
         restore_clipboard: config.output.restore_clipboard,
         restore_clipboard_delay: Duration::from_millis(config.output.restore_clipboard_delay_ms),
     });
-    inserter.insert(&processed.text, InsertMode::ClipboardFallback)?;
+    inserter.insert(&final_text, InsertMode::ClipboardFallback)?;
 
-    if let Err(error) = save_history(&config, raw_text, processed.text) {
+    if let Err(error) = save_history(&config, raw_text, final_text) {
         show_transient_overlay(
             app,
             "已插入文本",
@@ -307,60 +283,41 @@ fn finish_dictation(app: &AppHandle, active: ActiveRecording) -> Result<(), Oral
     Ok(())
 }
 
-fn process_text(transcript: Transcript, config: &AppConfig) -> Result<ProcessedText, OrallyError> {
-    if config.output.raw {
-        return Ok(ProcessedText {
-            text: transcript.text,
-            changes: Vec::new(),
-        });
-    }
-
-    let input = ProcessInput {
-        transcript,
-        context: AppContext {
-            locale: config.output.locale.clone(),
-            ..AppContext::default()
-        },
-        prompt: Default::default(),
-        dictionary_terms: default_dictionary(),
+fn build_speech_processor(config: &AppConfig) -> Result<SpeechProcessor, OrallyError> {
+    let refinement = if config.output.raw {
+        RefinementPlan::Raw
+    } else if matches!(config.postprocess.mode.as_str(), "llm" | "ai") {
+        RefinementPlan::AiPostprocessing(AiPostprocessPlan {
+            base_url: config.postprocess.base_url.clone(),
+            model: config.postprocess.model.clone(),
+            credential: CredentialSource::new(
+                config.postprocess.api_key.clone(),
+                config.postprocess.api_key_env.clone(),
+            ),
+            system_prompt: config.postprocess.system_prompt.clone(),
+            user_template: config.postprocess.user_template.clone(),
+            fallback_to_local_basic_cleanup: config.postprocess.fallback_to_builtin,
+        })
+    } else {
+        RefinementPlan::LocalBasicCleanup
     };
 
-    if matches!(config.postprocess.mode.as_str(), "llm" | "ai") {
-        let api_key = config
-            .postprocess
-            .api_key
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| env::var(&config.postprocess.api_key_env).ok())
-            .ok_or_else(|| {
-                OrallyError::InvalidInput(format!(
-                    "missing postprocess API key: set postprocess.api_key or env var {}",
-                    config.postprocess.api_key_env
-                ))
-            })?;
-        let mut llm_config = OpenAiChatPostprocessorConfig::new(
-            config.postprocess.base_url.clone(),
-            api_key,
-            config.postprocess.model.clone(),
-        );
-        llm_config.system_prompt = config.postprocess.system_prompt.clone();
-        llm_config.user_template = config.postprocess.user_template.clone();
-
-        match OpenAiChatPostprocessor::new(llm_config)?.process(input.clone()) {
-            Ok(processed) => return Ok(processed),
-            Err(error) if config.postprocess.fallback_to_builtin => {
-                let mut processed = BuiltInTextProcessor.process(input)?;
-                processed.changes.push(format!(
-                    "AI postprocessor failed; used built-in cleanup: {error}"
-                ));
-                return Ok(processed);
-            }
-            Err(error) => return Err(error),
-        }
-    }
-
-    let processor = BuiltInTextProcessor;
-    processor.process(input)
+    SpeechProcessor::new(SpeechPlan {
+        recognition: RecognitionPlan {
+            base_url: config.asr.base_url.clone(),
+            model: config.asr.model.clone(),
+            credential: CredentialSource::new(
+                config.asr.api_key.clone(),
+                config.asr.api_key_env.clone(),
+            ),
+            protocol: config.asr.protocol.parse().unwrap_or(AsrProtocol::Auto),
+            language: config.asr.language.clone(),
+            prompt: config.asr.prompt.clone(),
+        },
+        refinement,
+        locale: config.output.locale.clone(),
+    })
+    .map_err(OrallyError::from)
 }
 
 fn save_history(
@@ -386,100 +343,6 @@ fn save_history(
     };
     let store = HistoryStore::new(path);
     store.append(&HistoryEntry::new(raw_text, final_text, "desktop"))
-}
-
-fn build_asr_provider(options: &AsrOptions) -> Result<Box<dyn AsrProvider>, OrallyError> {
-    let api_key = options
-        .api_key
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| env::var(&options.api_key_env).ok())
-        .ok_or_else(|| {
-            OrallyError::InvalidInput(format!(
-                "missing API key: set asr.api_key or env var {}",
-                options.api_key_env
-            ))
-        })?;
-
-    match options.resolved_protocol() {
-        AsrProtocol::OpenAiTranscriptions => {
-            let mut config = OpenAiCompatibleAsrConfig::new(
-                options.base_url.clone(),
-                api_key,
-                options.model.clone(),
-            );
-            config.language = options.language.clone();
-            config.prompt = options.prompt.clone();
-
-            OpenAiCompatibleAsrProvider::new(config)
-                .map(|provider| Box::new(provider) as Box<dyn AsrProvider>)
-        }
-        AsrProtocol::ChatAudio => {
-            let mut config =
-                ChatAudioAsrConfig::new(options.base_url.clone(), api_key, options.model.clone());
-            config.language = options.language.clone();
-            config.prompt = options.prompt.clone();
-
-            ChatAudioAsrProvider::new(config)
-                .map(|provider| Box::new(provider) as Box<dyn AsrProvider>)
-        }
-        AsrProtocol::Auto => unreachable!("auto protocol should resolve before provider build"),
-    }
-}
-
-impl AsrOptions {
-    fn from_config(config: &AppConfig) -> Self {
-        Self {
-            base_url: config.asr.base_url.clone(),
-            model: config.asr.model.clone(),
-            api_key: config.asr.api_key.clone(),
-            api_key_env: config.asr.api_key_env.clone(),
-            protocol: AsrProtocol::parse(&config.asr.protocol).unwrap_or(AsrProtocol::Auto),
-            language: config.asr.language.clone(),
-            prompt: config.asr.prompt.clone(),
-        }
-    }
-
-    fn resolved_protocol(&self) -> AsrProtocol {
-        if self.protocol != AsrProtocol::Auto {
-            return self.protocol;
-        }
-
-        let base_url = self.base_url.to_ascii_lowercase();
-        let model = self.model.to_ascii_lowercase();
-        if base_url.contains("openrouter.ai")
-            || base_url.contains("maas.aliyuncs.com")
-            || model.contains("qwen3-asr")
-        {
-            AsrProtocol::ChatAudio
-        } else {
-            AsrProtocol::OpenAiTranscriptions
-        }
-    }
-}
-
-impl AsrProtocol {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "auto" => Ok(Self::Auto),
-            "openai-transcriptions" | "multipart" => Ok(Self::OpenAiTranscriptions),
-            "chat-audio" | "chat-completions" => Ok(Self::ChatAudio),
-            other => Err(format!("unknown ASR protocol: {other}")),
-        }
-    }
-}
-
-fn default_dictionary() -> Vec<DictionaryTerm> {
-    vec![
-        DictionaryTerm {
-            spoken: "visual studio code".to_string(),
-            written: "Visual Studio Code".to_string(),
-        },
-        DictionaryTerm {
-            spoken: "orally".to_string(),
-            written: "Orally".to_string(),
-        },
-    ]
 }
 
 fn show_recording_overlay(app: &AppHandle, hotkey_label: &str) {

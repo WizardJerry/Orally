@@ -2,6 +2,9 @@
 status: accepted
 ---
 
+[English](0004-keep-portable-data-with-the-application.md) |
+[简体中文](0004-keep-portable-data-with-the-application.zh-CN.md)
+
 # Keep all portable data with the application
 
 In Portable Installation mode, every persistent Orally artifact lives within the application directory so copying that directory to another Windows computer carries Config, Service Connections, Workflows, Modules, Local History, and retained audio together. Only temporary processing files may use operating-system locations. This extends the earlier config-only portable behavior into a complete portability contract.

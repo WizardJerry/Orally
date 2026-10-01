@@ -10,11 +10,10 @@ rust-version.workspace = true
 tauri-build = { version = "2.5.2", features = [] }
 
 [dependencies]
-orally-asr = { path = "../../../crates/orally-asr" }
 orally-audio = { path = "../../../crates/orally-audio" }
 orally-config = { path = "../../../crates/orally-config" }
 orally-core = { path = "../../../crates/orally-core" }
-orally-llm = { path = "../../../crates/orally-llm" }
+orally-speech = { path = "../../../crates/orally-speech" }
 orally-storage = { path = "../../../crates/orally-storage" }
 orally-windows = { path = "../../../crates/orally-windows" }
 serde = { version = "1", features = ["derive"] }

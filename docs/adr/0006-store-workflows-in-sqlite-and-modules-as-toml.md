@@ -2,6 +2,9 @@
 status: accepted
 ---
 
+[English](0006-store-workflows-in-sqlite-and-modules-as-toml.md) |
+[简体中文](0006-store-workflows-in-sqlite-and-modules-as-toml.zh-CN.md)
+
 # Store complete Workflows in SQLite and Modules as TOML
 
 Orally stores complete Workflow structures, Service Connections, plaintext Provider Credentials, and Local History in the portable SQLite database. Module content remains independently shareable: each Module is one TOML file, built-in Modules live under read-only `module/builtin/`, and custom Modules live under editable `module/custom/`. Workflows retain live references to those Modules. Global process, window, and hotkey Config remains in `config.toml`, while retained recordings live under `audio/`.

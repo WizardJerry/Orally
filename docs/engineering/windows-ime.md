@@ -1,5 +1,15 @@
 # Windows IME Development
 
+[English](windows-ime.md) | [简体中文](windows-ime.zh-CN.md)
+
+> Status: Deferred
+>
+> Document type: Research note
+>
+> Windows TSF work is not part of the active backend-first refactor. Re-read the
+> [Refactor Architecture Baseline](refactor-baseline.md) before activating this
+> work.
+
 Orally's current Windows prototype uses a foreground process, a global hotkey,
 the clipboard, and synthetic `Ctrl+V`. A real Windows input method should be a
 Text Services Framework (TSF) text service.
@@ -51,7 +61,9 @@ Microsoft's TSF registration docs describe this as standard COM registration
 plus TSF registration through `ITfInputProcessorProfiles::Register`.
 
 For development, prefer current-user registration under `HKCU` where possible.
-That keeps the prototype portable and avoids admin rights for every edit.
+That limits registration to the current user and avoids requiring administrator
+rights for every edit. Registry-based registration is not Portable
+Installation data.
 
 ## Current Repository State
 
@@ -59,7 +71,7 @@ That keeps the prototype portable and avoids admin rights for every edit.
 - `apps/windows-ime`: placeholder TSF DLL crate exporting standard COM DLL entry
   points. It is not a working input method yet.
 
-## Near-Term Implementation Steps
+## Research Checklist For A Future Review
 
 1. Implement COM class factory for the TSF text service.
 2. Implement `ITfTextInputProcessorEx::ActivateEx` and shutdown paths.
@@ -78,4 +90,3 @@ cargo build -p orally-windows-ime
 
 The registration exports are stubs for now, so do not use `regsvr32` until the
 registration TODOs are implemented.
-

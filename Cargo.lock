@@ -2272,11 +2272,11 @@ dependencies = [
 name = "orally-cli"
 version = "0.1.0"
 dependencies = [
- "orally-asr",
  "orally-audio",
  "orally-config",
  "orally-core",
  "orally-llm",
+ "orally-speech",
  "orally-windows",
 ]
 
@@ -2296,11 +2296,10 @@ version = "0.1.0"
 name = "orally-desktop"
 version = "0.1.0"
 dependencies = [
- "orally-asr",
  "orally-audio",
  "orally-config",
  "orally-core",
- "orally-llm",
+ "orally-speech",
  "orally-storage",
  "orally-windows",
  "serde",
@@ -2317,6 +2316,15 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "orally-speech"
+version = "0.1.0"
+dependencies = [
+ "orally-asr",
+ "orally-core",
+ "orally-llm",
 ]
 
 [[package]]

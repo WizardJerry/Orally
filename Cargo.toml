@@ -8,6 +8,7 @@ members = [
     "crates/orally-config",
     "crates/orally-core",
     "crates/orally-llm",
+    "crates/orally-speech",
     "crates/orally-storage",
     "crates/orally-windows",
 ]

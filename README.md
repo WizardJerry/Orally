@@ -1,21 +1,40 @@
 # Orally
 
-Orally is an early prototype for a cross-platform AI voice input layer.
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-The intended product is a privacy-first dictation tool that works across Windows,
-macOS, Linux, and Android. Users should be able to press a hotkey or use a system
-input method, speak naturally, and receive polished text at the current cursor.
+Orally is a working early prototype for AI-assisted voice input and a
+learning-oriented Rust refactoring project.
+
+The current useful slice records or accepts audio, sends it to an
+OpenAI-compatible speech-recognition provider, refines the transcript locally or
+with an AI postprocessor, and produces paste-ready text. The Windows Desktop App
+also provides Toggle Mode, tray controls, an overlay, and clipboard insertion.
+
+## Development Approach
+
+The active refactor now shares the existing ASR and post-processing path through
+`orally-speech`. CLI voice commands and the Desktop App use that seam while
+retaining their different outer policies. Its purpose is to improve
+responsibility placement in small, behavior-preserving steps, not to build every
+capability in the product notes.
+
+Read the
+[Refactor Architecture Baseline](docs/engineering/refactor-baseline.md) before
+implementation work and [Documentation Map](docs/README.md) for document roles.
 
 ## Current Prototype
 
 This repository currently contains:
 
-- `crates/orally-core`: shared Rust domain types and a minimal speech-to-text
-  post-processing pipeline.
+- `crates/orally-core`: shared Rust domain types, interfaces, Local Basic
+  Cleanup, demo adapters, and the legacy demo pipeline.
 - `crates/orally-audio`: cross-platform microphone capture, PCM16 metrics, and
   WAV encoding.
-- `apps/orally-cli`: a small command-line demo that simulates ASR output and
-  runs it through the post-processing pipeline, plus an audio recording command.
+- `crates/orally-speech`: shared audio-to-Final-Text orchestration, including
+  ASR adapter selection and Raw, local, or AI refinement.
+- `apps/orally-cli`: a developer-facing tool for demo, recording,
+  transcription, text processing, dictation, hotkey listening, and
+  configuration.
 - `apps/orally-desktop`: a Tauri desktop shell with a Windows tray icon and a
   Material-style settings UI backed by the local TOML config.
 - `docs/product`: product definition, architecture notes, privacy model,
@@ -118,7 +137,6 @@ Update one config value:
 
 ```powershell
 cargo run -p orally-cli -- config set asr.model qwen3-asr-flash
-cargo run -p orally-cli -- config set asr.api_key "sk-..."
 cargo run -p orally-cli -- config set asr.api_key_env ORALLY_OPENAI_COMPAT_API_KEY
 cargo run -p orally-cli -- config set postprocess.mode llm
 cargo run -p orally-cli -- config set postprocess.model deepseek-v4-flash-0731
@@ -127,6 +145,12 @@ cargo run -p orally-cli -- config set output.paste_delay_ms 300
 cargo run -p orally-cli -- config set output.restore_clipboard true
 cargo run -p orally-cli -- config set output.show_changes true
 ```
+
+Direct `asr.api_key` and `postprocess.api_key` values are supported, but they
+are stored as plaintext. Passing a direct key to `config set` may also retain it
+in shell history, and `config show` prints direct keys without redaction.
+Prefer environment-variable references, and redact configuration output before
+copying or sharing it.
 
 Common keys:
 
@@ -188,11 +212,13 @@ The app uses Tauri v2 and keeps a tray icon alive while the settings window is
 open or hidden. Left-click the tray icon, or choose `Open Settings`, to show the
 window again.
 
-The desktop app also registers `Ctrl+Alt+Space` as the Windows dictation hotkey.
-Press once to start recording. A small always-on-top prompt appears near the
-bottom of the screen. Press the same hotkey again, or click `停止`, to stop
-recording, transcribe, post-process, and paste the final text back into the
-window that was active when recording started.
+At startup, the desktop app registers the Windows dictation hotkey selected by
+`hotkey.preset`. New configurations default to `Ctrl+Alt+Space`; an unreadable
+or invalid preset also falls back to that shortcut. Press once to start
+recording. A small always-on-top prompt appears near the bottom of the screen.
+Press the same hotkey again, or click `停止`, to stop recording, transcribe,
+post-process, and paste the final text back into the window that was active when
+recording started.
 
 The desktop app currently uses Toggle Mode exclusively. Silence, key release,
 fixed duration, and maximum duration do not stop a recording; only another
@@ -204,8 +230,9 @@ The tray menu can also start or stop dictation, pause or resume the hotkey, open
 settings, and quit Orally.
 
 The current prototype still exposes a fixed hotkey preset list and reads changes
-only at startup. The target Windows MVP replaces this with direct shortcut
-capture, immediate conflict validation, and registration without restarting.
+only at startup. Direct shortcut capture, immediate conflict validation, and
+registration without restarting are deferred product improvements, not part of
+the completed shared-speech milestone.
 
 The settings UI can edit:
 
@@ -213,15 +240,18 @@ The settings UI can edit:
   variable, language hint, and ASR prompt.
 - AI post-processing mode, OpenAI-compatible LLM endpoint/model/API key, system
   prompt, and user template.
-- Global shortcut, default recording duration, paste delay, output locale, default
-  insert behavior, change display, and clipboard restoration.
-- Raw transcript mode, external-request privacy switch, and local history.
+- Global shortcut, paste delay, output locale, Raw Transcript mode, and
+  clipboard restoration.
+- The shared `output.insert` and `output.show_changes` settings used by CLI
+  voice commands. Desktop currently always inserts Final Text and does not show
+  the processing-change list.
+- External-request privacy switch and local history.
 
 Saving writes the same local config used by the CLI, usually
 `%APPDATA%\Orally\config.toml` on Windows. Leave the API Key field blank to use
 only an environment variable reference.
 
-## AI Post-Processing
+## Desktop AI Post-Processing
 
 By default Orally uses the built-in local cleaner. Set:
 
@@ -233,25 +263,33 @@ model = "deepseek-v4-flash-0731"
 api_key_env = "ORALLY_OPENAI_COMPAT_API_KEY"
 ```
 
-The AI postprocessor sends the ASR transcript to an OpenAI-compatible
-`/chat/completions` endpoint and expects only the final text in response. Use
-`postprocess.system_prompt` and `postprocess.user_template` to customize the
-cleanup behavior. The user template supports `{{transcript}}` and `{{locale}}`.
+In the Desktop flow, the AI postprocessor sends the ASR transcript to an
+OpenAI-compatible `/chat/completions` endpoint and expects only the final text in
+response. Use `postprocess.system_prompt` and `postprocess.user_template` to
+customize the cleanup behavior. The user template supports `{{transcript}}` and
+`{{locale}}`.
 
 Set `output.raw = true` to bypass both built-in and AI post-processing.
 
-If `postprocess.fallback_to_builtin = true`, a remote AI post-processing failure
-falls back to Orally's local cleaner so the dictation can still complete.
+If `postprocess.fallback_to_builtin = true`, an error returned by the Desktop AI
+processor falls back to Orally's local cleaner. A missing AI credential or
+processor-construction error currently fails before that fallback. CLI voice
+commands ignore `postprocess.mode`; `process --ai` is an independent developer
+command and does not use this fallback setting.
 
-## Local History And Clipboard Privacy
+## JSONL History Prototype And Clipboard Privacy
 
-If `privacy.history_enabled = true`, Orally appends local JSONL history beside
-the active config file as `history.jsonl`. Each entry stores the raw ASR text and
-the final inserted text. Set `privacy.history_path` to use a custom file, or set
-`privacy.history_enabled = false` to disable history.
+The current default is `privacy.history_enabled = true`. After successful
+insertion, the Desktop flow therefore appends local JSONL history beside the
+active config file as `history.jsonl`. Each entry stores both the raw ASR text
+and the final inserted text, plus a millisecond timestamp and the `desktop`
+provider marker. Set `privacy.history_path` to use a custom file, or set
+`privacy.history_enabled = false` to disable this retention. CLI voice commands
+do not write this file.
 
-Set `privacy.allow_external_requests = false` to block remote ASR and AI
-post-processing requests.
+In the Desktop flow, set `privacy.allow_external_requests = false` to block
+remote ASR and AI post-processing requests. CLI network commands do not
+currently enforce this setting.
 
 On Windows, Orally uses the clipboard fallback insertion path. When
 `output.restore_clipboard = true`, Orally restores the previous text clipboard
@@ -259,11 +297,15 @@ after paste and removes the generated text from the clipboard. This first
 implementation preserves previous text clipboard content; non-text clipboard
 formats are not restored yet.
 
-## Portable Windows App
+## Executable-local Windows Prototype
 
-Orally supports a portable mode without registering as a Windows input method.
-If a `config.toml` file exists beside `Orally.exe`, Orally reads that file before
-falling back to `%APPDATA%\Orally\config.toml`.
+Orally currently supports executable-local configuration without registering as
+a Windows input method. Configuration path precedence is an explicit
+`ORALLY_CONFIG` path first, then an existing `config.toml` beside `Orally.exe`,
+then `%APPDATA%\Orally\config.toml`.
+
+This is a config-local prototype, not the complete Portable Installation
+contract defined by the deferred product design.
 
 Build a portable folder:
 
@@ -291,9 +333,17 @@ writes the latest `config.example.toml` for reference.
 
 ## Direction
 
-Orally will use a shared Rust core with platform-native shells:
+The behavior-preserving shared-speech milestone in the architecture baseline is
+implemented in the current working tree. CLI and Desktop keep their current
+outer behavior while sharing audio-to-Final-Text processing through
+`orally-speech`.
 
-- Windows: tray app, hotkey, text insertion, later TSF integration.
-- macOS: menu bar app, Accessibility/InputMethodKit where appropriate.
-- Linux: daemon plus IBus/Fcitx5 integration.
-- Android: Kotlin `InputMethodService` with Rust core over JNI/UniFFI.
+The continuing refactor is backend-first and documentation-gated. English
+documents remain canonical and Simplified Chinese paired documents are updated
+with them. Each later capability enters the Active baseline as its own minimal
+milestone before implementation; the broader product notes are not one combined
+backlog to implement at once.
+
+TSF, Android, macOS, Linux, local ASR, sync, plugins, and the complete Portable
+Installation design remain deferred possibilities rather than current
+milestones.

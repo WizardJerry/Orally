@@ -1,213 +1,101 @@
-# Orally Architecture
+# Orally Product Architecture
 
-## Shape
+[English](architecture.md) | [简体中文](architecture.zh-CN.md)
 
-Orally should be built as a shared Rust core with platform-native shells.
+> Status: Reference
+>
+> This document describes stable product boundaries and deferred product
+> decisions. Repository facts and the proposed migration route live in the
+> [Refactor Architecture Baseline](../engineering/refactor-baseline.md).
 
-```text
-platform trigger -> audio capture -> VAD -> ASR -> postprocess -> insert text
-                                             |        |
-                                             |        +-> workflow/modules
-                                             +----------> local history
-```
+## Core Value Flow
 
-## Repository Layout
+The product flow is intentionally small:
 
-```text
-crates/
-  orally-core/       domain types and processing pipeline
-  orally-audio/      microphone capture, VAD metrics, WAV encoding
-  orally-asr/        OpenAI-compatible ASR provider
-  orally-config/     local TOML configuration
-  orally-llm/        OpenAI-compatible AI post-processing provider
-  orally-storage/    local JSONL history
-  orally-windows/    Windows clipboard paste insertion prototype
-  orally-sync/       future WebDAV/folder sync
-apps/
-  orally-cli/        current prototype runner
-  orally-desktop/    Tauri tray app and settings UI
-  windows-ime/       future TSF text service DLL
-  android/           future Kotlin InputMethodService
-docs/product/        product definition, planning, and product grilling notes
-docs/engineering/    human-readable implementation and platform notes
-.agents/             agent-only setup, skill, and tooling context
-```
+    trigger or command
+      -> audio input
+      -> speech recognition
+      -> text refinement
+      -> text delivery
 
-## Platform Plan
+Local History, Audio Retention, Automatic Stop, Workflow selection, pending
+states, and recovery may support that flow. They are not mandatory processing
+stages.
 
-| Platform | Shell | Notes |
-| --- | --- | --- |
-| Windows | Rust tray app plus `windows-rs` | Start with hotkey and text insertion. Later explore TSF for deeper input method integration. |
-| macOS | Swift/SwiftUI plus Rust FFI | Menu bar app, microphone permission, optional Accessibility for insertion. |
-| Linux | Rust daemon plus IBus/Fcitx5 | Support X11 first. Wayland requires compositor-aware compatibility choices. |
-| Android | Kotlin plus Rust over JNI/UniFFI | Use `InputMethodService` as the primary input path. |
+## Product Boundaries
 
-## Core Interfaces
+- A **driving shell** starts Voice Input, presents state, and delivers Final
+  Text through its environment. The Windows Desktop App and CLI are different
+  shells with different users and interaction constraints.
+- An **audio adapter** supplies bounded audio without deciding how text should
+  be refined or delivered.
+- A **speech-recognition adapter** turns audio into Raw Transcript and owns the
+  external protocol details needed for that request.
+- A **refinement policy** selects raw output, AI Post-processing, or Local Basic
+  Cleanup and produces Final Text.
+- A **delivery adapter** writes or inserts Final Text without owning speech or
+  refinement policy.
+- Configuration, Local History, pending states, and recovery support the value
+  flow without becoming mandatory dependencies of every adapter.
 
-The core crate currently defines these important traits:
+Environment-specific lifecycle belongs in the driving shell. Shared code is
+valuable when it hides a real product decision for more than one caller; a
+pass-through wrapper is not a product architecture boundary by itself.
 
-- `AsrProvider`: converts audio into a transcript.
-- `TextProcessor`: converts raw transcript into polished text.
-- `TextInserter`: sends the processed text to a target.
-- `OrallyPipeline`: coordinates the end-to-end flow.
+## Deferred Design Commitments
 
-This keeps the first prototype small while leaving room for local Whisper,
-OpenAI-compatible ASR, custom LLM providers, and OS-specific insertion engines.
+Accepted ADRs apply if their capabilities become active:
 
-## AI Post-Processing
+| Decision | Capability |
+| --- | --- |
+| [ADR-0002](../adr/0002-compose-modules-into-one-request.md) | Product Modules compose into one AI request |
+| [ADR-0003](../adr/0003-share-provider-connections-across-workflows.md) | Workflows share Service Connections |
+| [ADR-0004](../adr/0004-keep-portable-data-with-the-application.md) | A full Portable Installation keeps persistent data with the application |
+| [ADR-0006](../adr/0006-store-workflows-in-sqlite-and-modules-as-toml.md) | SQLite stores Workflow, connection, credential, and Local History records; product Modules remain TOML |
+| [ADR-0007](../adr/0007-stream-long-recordings-through-audio-segments.md) | Long recordings use progressive Audio Segments |
 
-`orally-llm` implements the first AI post-processing provider using an
-OpenAI-compatible chat completions endpoint. The desktop app selects it when
-`[postprocess].mode` is `llm` or `ai`; otherwise it uses the built-in local
-cleaner. The LLM prompt is configured through `[postprocess].system_prompt` and
-`[postprocess].user_template`, with `{{transcript}}` and `{{locale}}`
-placeholders.
+[ADR-0001](../adr/0001-ordered-workflow-stages.md) and
+[ADR-0005](../adr/0005-use-hybrid-portable-storage.md) are historical because
+they were superseded. Accepted means a decision remains in force if its
+capability is implemented; it does not schedule that capability.
 
-## Audio Input Prototype
+## Deferred Behavior Reference
 
-The current audio layer uses CPAL for cross-platform microphone capture. It
-records from the default input device into PCM16, computes basic signal metrics,
-and can write a WAV file for manual inspection or later ASR submission.
+These previously agreed product behaviors are retained for the next relevant
+review, not activated by this document:
 
-Current validation command:
+- a saved Global Trigger is captured directly, checked for conflicts, and
+  applied without restarting;
+- Automatic Stop is optional and disabled by default;
+- First-run Setup validates speech recognition and microphone access before
+  offering AI Post-processing setup and enabling the Global Trigger;
+- Built-in Workflows are read-only; a user copies one before customizing it;
+- Active Workflow can be selected from the tray or settings, and its name is
+  visible when selection matters;
+- Local History is user controlled and retains a bounded set of Voice Input
+  outcomes;
+- Audio Retention is disabled by default and follows the lifecycle of its Local
+  History entry;
+- Pending Voice Input permits speech-recognition retry without speaking again
+  and is cleared after success, discard, a new recording, or exit;
+- Pending Refinement permits refinement retry from Raw Transcript during the
+  current run; cross-run recovery requires the separate Raw Transcript
+  retention opt-in;
+- when AI Post-processing fails and Local Basic Cleanup succeeds, Final Text
+  remains deliverable and the shell indicates that degraded path;
+- Insertion Recovery keeps Final Text available on the clipboard and in Local
+  History, with actions to retry insertion or open Local History;
+- External-request Blocking prevents external providers but does not prevent a
+  configured local speech-recognition path;
+- a complete Portable Installation does not create a startup entry in the
+  Windows MVP.
 
-```powershell
-cargo run -p orally-cli -- record --seconds 3 --output orally-recording.wav
-```
+Every item is rechecked against the current user problem, privacy model, and
+accepted ADRs before implementation.
 
-This is intentionally separate from ASR. The next step is to pass the resulting
-`AudioInput { format: Pcm16 }` into a real transcription provider.
+## Platform Direction
 
-## ASR Provider Prototype
-
-`orally-asr` implements two early ASR request protocols.
-
-OpenAI transcription protocol accepts PCM16 or WAV input and sends multipart
-audio to:
-
-```text
-{base_url}/audio/transcriptions
-```
-
-Chat audio protocol accepts PCM16 or WAV input, base64-encodes it, and sends JSON
-audio content to:
-
-```text
-{base_url}/chat/completions
-```
-
-OpenRouter audio input models use the chat audio protocol. Some
-OpenAI-compatible chat audio models, including `qwen3-asr-flash`, expect
-`input_audio.data` to be a data URL such as `data:audio/wav;base64,...`.
-
-The first CLI surfaces are:
-
-```powershell
-cargo run -p orally-cli -- transcribe --file orally-recording.wav --model <model>
-cargo run -p orally-cli -- dictate --seconds 3 --model <model>
-```
-
-API keys are read from environment variables by default, not from command-line
-arguments.
-
-## Windows Insertion Prototype
-
-The first Windows insertion path uses the clipboard plus synthetic `Ctrl+V`.
-This avoids installer-level input method registration and keeps the prototype
-portable. The CLI exposes it through:
-
-```powershell
-cargo run -p orally-cli -- dictate --seconds 3 --insert --paste-delay-ms 1200
-cargo run -p orally-cli -- listen --paste-delay-ms 300
-```
-
-This is a prototype path. A later Windows shell should move the same insertion
-adapter behind a tray app and global press-to-talk hotkey.
-
-The clipboard adapter now restores the previous text clipboard content after
-paste when `output.restore_clipboard` is enabled. This removes the generated
-dictation text from the clipboard after insertion while preserving the previous
-text clipboard value. Full non-text clipboard format preservation is still a
-future improvement.
-
-The current listener registers `Ctrl+Alt+Space` through the Win32 global hotkey
-API and runs in the foreground terminal process. The same hotkey toggles
-recording: first press starts capture, second press stops capture and submits
-the audio for transcription.
-
-## Desktop Settings Shell
-
-`apps/orally-desktop` is the first Tauri v2 desktop shell. It provides a Windows
-tray icon and a Material-style settings window. The UI edits the same local TOML
-configuration used by the CLI:
-
-- ASR provider preset, base URL, model, request protocol, optional local API
-  key, API key environment variable, language hint, and ASR prompt.
-- Global shortcut, default recording duration, paste delay, output locale, default
-  insertion behavior, and change display.
-- Raw transcript mode and privacy/storage notes.
-
-The shell can run with only an API key environment variable name, or store an
-optional local API key in the user config for portable/testing scenarios. The
-next step is to move the existing Windows hotkey listener and clipboard
-insertion loop behind this tray process so users can run Orally without a
-terminal.
-
-The first tray implementation already owns the Windows `Ctrl+Alt+Space` hotkey.
-Recording starts and stops with the same hotkey. While recording, a small
-bottom-of-screen Tauri overlay shows the active dictation state and exposes a
-mouse-click stop button. Because clicking the overlay moves focus away from the
-target app, the tray process records the foreground window at recording start
-and restores it before clipboard paste insertion.
-
-The tray app supports a portable layout. If `config.toml` exists beside the
-running executable, Orally uses it before the normal user config path. This lets
-the Windows portable build run as a background app without registering as an
-input method and without writing settings into `%APPDATA%`.
-
-The target Windows MVP captures a user-selected key combination directly,
-validates conflicts when it is saved, and registers it immediately without an
-application restart. The current prototype's `[hotkey].preset` setting is a
-temporary implementation that must be replaced.
-
-The tray process can append local history through `orally-storage`. By default
-history is stored as `history.jsonl` next to the active config file and contains
-the raw ASR text plus the final inserted text. `privacy.history_enabled` disables
-this, and `privacy.allow_external_requests` blocks remote ASR/LLM calls.
-
-## Windows IME Direction
-
-The formal Windows input method should use Text Services Framework (TSF). The
-TSF component should be a thin in-process COM DLL that owns TSF activation,
-profile registration, composition, and final text commit. The heavier Orally
-workloads should remain in a separate process or shared core: microphone capture,
-ASR, post-processing, settings, and history.
-
-Development should not require a full reinstall loop. The planned developer loop
-is per-user registration of the current debug DLL, scriptable unregister/register
-steps, and debugger attachment to the text input host process.
-
-## Provider Strategy
-
-Providers should be configured through a common schema:
-
-```toml
-[providers.asr.default]
-type = "openai-compatible-asr"
-base_url = "https://api.example.com/v1"
-model = "transcribe-model"
-api_key_ref = "example"
-
-[providers.llm.default]
-type = "openai-compatible-chat"
-base_url = "https://api.example.com/v1"
-model = "cleanup-model"
-api_key_ref = "example"
-```
-
-Local providers should use the same internal interface so users can switch
-between cloud and local execution without changing the rest of the app.
-
-The current CLI reads this shape from a local TOML file. On Windows the default
-path is `%APPDATA%\Orally\config.toml`; `ORALLY_CONFIG` can point to a portable
-or test-specific config file.
+Platform shells may eventually include Windows TSF, Android
+InputMethodService, a macOS menu-bar integration, or Linux IBus/Fcitx5. Platform
+breadth is a deferred possibility, not a product success criterion or an active
+milestone.

@@ -1,82 +1,89 @@
 # Orally Product Definition
 
-Orally is a cross-platform AI voice input method for people who want to speak
-naturally and receive polished text in the place they are already writing.
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## Positioning
+> Status: Reference
+>
+> Active engineering scope:
+> [Refactor Architecture Baseline](../engineering/refactor-baseline.md)
 
-Orally is not only a recorder or transcription app. It is a system-level input
-layer:
+## Product Problem
 
-1. The user triggers recording from the current writing context.
-2. Speech is transcribed by a local model or a user-configured API.
-3. The transcript is cleaned by an AI post-processing pipeline.
-4. The final text is inserted at the current cursor or copied as a fallback.
+Orally helps a person speak naturally and receive polished text in the place
+where they are already writing.
 
-## Target Users
+The useful product loop is intentionally small:
 
-- Knowledge workers writing messages, notes, emails, and documents.
-- Developers who want voice-to-text with technical vocabulary and code terms.
-- Multilingual users who mix Chinese, English, and domain-specific terms.
-- Privacy-conscious users who want local storage and bring-your-own API keys.
+1. start a Voice Input;
+2. capture or provide audio;
+3. transcribe speech;
+4. refine the raw transcript;
+5. deliver the final text.
+
+## Current Useful Scope
+
+The existing prototype already satisfies the current basic need:
+
+- OpenAI-compatible speech recognition;
+- Local Basic Cleanup or OpenAI-compatible AI Post-processing;
+- shared audio-to-Final-Text orchestration used by CLI voice commands and the
+  Windows Desktop App;
+- CLI commands for recording, transcription, processing, and dictation;
+- a Windows Desktop App with Toggle Mode, tray controls, an overlay, and
+  clipboard insertion;
+- local TOML configuration;
+- a JSONL history prototype in the Desktop path.
+
+The current goal is to preserve and understand this slice while expanding only
+through reviewed, minimal milestones. It is not to implement every deferred
+possibility at once.
+
+## Product Roles
+
+- **Windows Desktop App** is the end-user product.
+- **CLI** is a developer-facing tool and was the first driving adapter for the
+  completed shared-speech migration.
+- **Windows IME** is deferred research, not the current product.
+
+Starting the shared-speech migration with the CLI changed implementation order,
+not product positioning.
 
 ## Product Principles
 
-- Input first: speaking into the current text field should be the primary path.
-- Local first: history, prompts, and settings stay local by default.
-- User controlled: ASR providers, LLM providers, and prompts are configurable.
-- Minimal permissions: each permission must map to a clear feature.
-- Platform native: shared core behavior, native input integration per operating
-  system.
+- **Useful first**: preserve the working speech-to-polished-text loop.
+- **Small steps**: prefer one understandable improvement over a complete
+  framework.
+- **User controlled**: provider endpoints, models, prompts, and keys remain
+  explicit configuration.
+- **Privacy visible**: document what leaves the machine and what is retained.
+- **Native where needed**: platform-specific triggering and insertion remain
+  adapters around shared behavior.
+- **Learning over breadth**: architecture is introduced when current behavior
+  justifies it.
 
-## MVP Scope
+## Active Development Intent
 
-- Press-to-talk recording trigger.
-- Voice activity detection abstraction.
-- ASR provider abstraction.
-- LLM/text post-processing abstraction.
-- Adjustable Workflows composed from reusable Modules.
-- Local history.
-- Privacy mode that disables external requests.
-- Current-cursor insertion with clipboard fallback.
+The active baseline defines the behavior-preserving shared-speech refactor,
+records its implemented stop point, and owns the continuing backend-first
+sequence. Its stages, affected files, and next review belong only in that
+baseline. This product definition does not independently authorize further
+implementation.
 
-## Windows MVP Shape
+## Deferred Product Breadth
 
-The first usable Windows package should ship as a tray-resident desktop app
-before becoming a formal TSF input method. The tray app can be portable or
-installed for the current user, owns the global hotkey, records arbitrary-length
-speech with the same start/stop hotkey, calls the configured ASR/post-processing
-pipeline, and inserts text through the current clipboard paste adapter.
+The [roadmap](roadmap.md) indexes possible future capabilities. They are not
+missing acceptance criteria, and only an approved active baseline may schedule
+one of them.
 
-The settings window should stay simple and Material-style: provider, optional
-local API key, API key environment reference, hotkey, recording delay, insertion
-behavior, ASR prompt, raw-output mode, post-processing options, and
-privacy/storage status. A TSF IME can later reuse the same core pipeline and
-configuration while adding native input-method registration and composition
-support.
+## Before Product Growth
 
-The tray MVP should provide explicit in-progress feedback. When dictation is
-active, Orally shows a compact bottom overlay with a recording indicator and a
-mouse-click stop button, while preserving the original target window for final
-text insertion.
+Before implementing any new capability, review:
 
-For the first portable Windows build, Orally stays a normal background tray app
-rather than registering as an input method. Portable mode is activated by placing
-`config.toml` beside `Orally.exe`; this keeps API settings, shortcut configuration, and
-output behavior local to the portable folder.
+1. this product definition;
+2. [Privacy And Permissions](privacy.md);
+3. the relevant terms in [CONTEXT](../../CONTEXT.md);
+4. related accepted and superseded ADRs;
+5. the active refactor baseline.
 
-## Differentiation
-
-Compared with closed dictation tools, Orally should focus on:
-
-- Custom API endpoints.
-- Custom post-processing prompts.
-- Local-first storage.
-- Portable or current-user installation on Windows.
-- Cross-platform architecture.
-- Clear permission boundaries.
-- Optional WebDAV, iCloud Drive, or OneDrive sync without a required account
-  system.
-
-A personal dictionary is intentionally outside the Windows MVP and may be
-revisited after Workflows and reusable Modules are validated.
+Implementation begins only after those documents agree on the smallest useful
+scope and explicit non-goals.

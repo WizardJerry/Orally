@@ -2,6 +2,9 @@
 status: superseded by ADR-0006
 ---
 
+[English](0005-use-hybrid-portable-storage.md) |
+[简体中文](0005-use-hybrid-portable-storage.zh-CN.md)
+
 # Use SQLite for private records and TOML for shareable configuration
 
 Orally uses a hybrid portable storage model. Local History and plaintext Provider Credentials live in the portable SQLite database, while global settings, non-secret Service Connection data, Workflows, and Modules use TOML so users can inspect, version, and share configurations. Shareable TOML must never contain API keys.

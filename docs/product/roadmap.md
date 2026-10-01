@@ -1,80 +1,52 @@
 # Orally Roadmap
 
-## Phase 0: Core Prototype
+[English](roadmap.md) | [简体中文](roadmap.zh-CN.md)
 
-- Rust workspace.
-- Shared domain types.
-- Minimal ASR, post-processing, and insertion traits.
-- CLI demo.
-- Product and architecture documents.
-- Completed: microphone recording to WAV.
-- Completed: remote ASR providers for multipart transcription and chat-audio
-  style APIs.
-- Completed: ASR output flows through built-in post-processing by default.
-- Completed: Windows clipboard paste insertion prototype.
-- Completed: Windows foreground global hotkey listener with same-key start/stop
-  recording.
-- Started: Windows TSF IME DLL scaffold and development notes.
-- Completed: local TOML configuration with provider presets.
-- Completed: initial Tauri desktop settings shell with Windows tray icon.
-- Completed: tray-owned Windows dictation hotkey with bottom overlay and stop
-  button.
-- Completed: portable Windows app layout using executable-directory
-  `config.toml`.
-- Replace the prototype hotkey preset list with direct shortcut capture,
-  immediate conflict validation, and registration without restarting.
-- Completed: tray menu controls for start/stop dictation and pause/resume
-  hotkey.
-- Completed: OpenAI-compatible AI post-processing provider.
-- Completed: local JSONL history with privacy toggles.
-- Completed: text clipboard restoration after paste.
+> Status: Reference
+>
+> This file is an index of the working baseline and unscheduled product
+> possibilities. The [Refactor Architecture
+> Baseline](../engineering/refactor-baseline.md) is the only active execution
+> plan.
 
-## Phase 1: Useful Desktop MVP
+## Working Prototype
 
-- Audio capture on Windows.
-- OpenAI-compatible ASR provider.
-- Chat-audio ASR provider for OpenAI-compatible audio models such as OpenRouter
-  audio models and `qwen3-asr-flash`.
-- Clipboard fallback insertion.
-- Press-to-talk global hotkey.
-- Completed: local history.
-- Completed: OpenAI-compatible LLM post-processing provider.
-- Completed: basic settings UI.
-- Completed: settings UI backed by the local configuration file.
-- Completed: tray-resident Windows dictation loop using the existing same-key
-  start/stop hotkey path.
-- Completed: portable package script for tray-app mode without IME
-  registration.
-- Completed: privacy switches for external requests and local history.
-- TSF text service COM class factory and per-user registration scripts.
+The repository already provides the useful speech-to-polished-text loop through
+remote ASR, Local Basic Cleanup or AI Post-processing, CLI tools, and a Windows
+Desktop prototype. TOML configuration, JSONL history, and executable-local
+configuration exist in limited prototype forms. CLI voice commands and the
+Desktop App now share their audio-to-Final-Text processing through
+`orally-speech`.
 
-## Phase 2: Android IME
+The current objective is to preserve and understand that working slice while
+adding later capabilities through reviewed, backend-first milestones. See the
+baseline for exact current behavior, the implemented shared-speech route, and
+the next Active step; it is not repeated here.
 
-- Kotlin `InputMethodService`.
-- Press-and-hold microphone key.
-- Provider configuration.
-- Workflow support.
-- Optional floating control.
+## Unscheduled Product Possibilities
 
-## Phase 3: Local-First Power Features
+- Workflow, product Module, and Active Workflow;
+- Service Connection and Default Service Slot;
+- SQLite product storage and credential migration;
+- complete Portable Installation;
+- full Local History, Audio Retention, and recovery;
+- progressive long-recording Audio Segments;
+- First-run Setup and arbitrary Global Trigger capture;
+- Windows TSF;
+- Android, macOS, and Linux shells;
+- local ASR;
+- personal dictionary;
+- folder or WebDAV sync;
+- provider plugins;
+- encrypted backup.
 
-- Local Whisper or sherpa-onnx provider.
-- Privacy mode enforcement.
-- App-specific Workflow selection.
-- Optional personal dictionary and import/export, deferred from the Windows MVP.
-- Local encrypted backup.
+This list records possibility, not priority or commitment. GitHub Issues may
+describe concrete bugs or proposals, but an issue becomes scheduled only when
+an approved active baseline places it in scope.
 
-## Phase 4: Cross-Platform Shells
+## Entry Rule
 
-- macOS menu bar app and insertion.
-- Linux IBus/Fcitx5 integration.
-- Windows TSF research prototype.
-- Shared desktop settings UI.
-
-## Phase 5: Sync And Extensibility
-
-- Folder sync.
-- WebDAV sync.
-- Prompt module conflict resolution.
-- Provider plugin API.
-- Codegraph-assisted architecture tracking.
+Before any item becomes active, document the user problem, explain why the
+working slice is insufficient, choose the smallest useful behavior, list
+non-goals, reconcile product and privacy documents with relevant ADRs, and stop
+for user review. The active baseline owns the detailed gate.

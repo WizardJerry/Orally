@@ -2,9 +2,12 @@
 status: accepted
 ---
 
+[English](0002-compose-modules-into-one-request.md) |
+[简体中文](0002-compose-modules-into-one-request.zh-CN.md)
+
 # Compose Modules into one post-processing request
 
-Each Workflow performs one speech-recognition request and at most one AI post-processing request. Rather than invoking a separate model for every refinement step, Orally composes an ordered selection of reusable built-in or user-created Modules into one prompt sent to the Workflow's selected LLM. This replaces the sequential-request design in ADR-0001 to reduce latency and cost while making instructions reusable across scenarios.
+Each Workflow performs one Speech-recognition Stage and at most one AI post-processing request. Under [ADR-0007](0007-stream-long-recordings-through-audio-segments.md), the recognition Stage may issue multiple sequential Audio Segment requests, but it produces one ordered Raw Transcript for the Workflow. Rather than invoking a separate model for every refinement step, Orally composes an ordered selection of reusable built-in or user-created Modules into one prompt sent to the Workflow's selected LLM. This replaces the sequential post-processing design in ADR-0001 to reduce latency and cost while making instructions reusable across scenarios.
 
 ## Consequences
 
