@@ -1,9 +1,6 @@
-# Test Orally's AI postprocessor against the temporary Aliyun Bailian
-# OpenAI-compatible endpoint. Keep API keys out of the repo:
+# Test Orally's AI postprocessor against an OpenAI-compatible endpoint.
+# Override -BaseUrl and -Model for your service. Keep API keys out of the repo:
 #   $env:ORALLY_OPENAI_COMPAT_API_KEY = "..."
-#
-# This script defaults to deepseek-v4-flash-0731 for text post-processing.
-# Use qwen3-asr-flash in the ASR/transcribe path, not here.
 param(
     [ValidateSet("cleanup", "outline", "translate")]
     [string]$Task = "cleanup",
@@ -12,9 +9,9 @@ param(
 
     [string]$To = "English",
 
-    [string]$Model = "deepseek-v4-flash-0731",
+    [string]$Model = "gpt-4o-mini",
 
-    [string]$BaseUrl = "https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    [string]$BaseUrl = "https://api.openai.com/v1",
 
     [string]$ApiKeyEnv = "ORALLY_OPENAI_COMPAT_API_KEY"
 )
@@ -22,19 +19,28 @@ param(
 $ErrorActionPreference = "Stop"
 
 if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($ApiKeyEnv))) {
-    if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("ALIYUN_TEST_API_KEY"))) {
-        $ApiKeyEnv = "ALIYUN_TEST_API_KEY"
-    } else {
-        throw "Set `$env:$ApiKeyEnv or `$env:ALIYUN_TEST_API_KEY before running this script."
-    }
+    throw "Set the API key environment variable '$ApiKeyEnv' before running this script."
 }
 
-if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
-    $env:CARGO_TARGET_DIR = Join-Path $env:TEMP "orally-ai-postprocess-test-target"
+$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$cargoArgs = @(
+    "build", "-q", "-p", "orally-cli",
+    "--manifest-path", (Join-Path $projectRoot "Cargo.toml"),
+    "--message-format=json-render-diagnostics"
+)
+$buildOutput = @(& cargo @cargoArgs)
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+$artifact = $buildOutput |
+    ForEach-Object { $_ | ConvertFrom-Json } |
+    Where-Object { $_.reason -eq "compiler-artifact" -and $_.target.name -eq "orally-cli" -and $_.executable } |
+    Select-Object -Last 1
+if (-not $artifact) {
+    throw "The CLI build did not return an executable."
 }
 
-$args = @(
-    "run", "-q", "-p", "orally-cli", "--",
+$cliArgs = @(
     "process",
     "--ai",
     "--task", $Task,
@@ -44,10 +50,43 @@ $args = @(
 )
 
 if ($Task -eq "translate") {
-    $args += @("--to", $To)
+    $cliArgs += @("--to", $To)
 }
 
-$args += @("--", $Text)
+$cliArgs += @("--", $Text)
 
-cargo @args
-exit $LASTEXITCODE
+# The CLI always reads configuration beside itself. Run a copied executable
+# with a fresh, non-secret config so legacy user configuration is never
+# migrated into a build or test directory.
+$tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$testDirectoryName = "orally-ai-postprocess-" + [Guid]::NewGuid().ToString("N")
+$testDirectory = Join-Path $tempRoot $testDirectoryName
+New-Item -ItemType Directory -Path $testDirectory | Out-Null
+$exitCode = 1
+try {
+    $testExe = Join-Path $testDirectory ([IO.Path]::GetFileName($artifact.executable))
+    Copy-Item -LiteralPath $artifact.executable -Destination $testExe
+    $fixtureConfig = @'
+[privacy]
+allow_external_requests = true
+history_enabled = false
+'@
+    [IO.File]::WriteAllText(
+        (Join-Path $testDirectory "config.toml"),
+        $fixtureConfig,
+        [Text.UTF8Encoding]::new($false)
+    )
+    & $testExe @cliArgs
+    $exitCode = $LASTEXITCODE
+} finally {
+    $resolvedTestDirectory = (Resolve-Path -LiteralPath $testDirectory).Path
+    $expectedTestDirectory = [IO.Path]::GetFullPath((Join-Path $tempRoot $testDirectoryName))
+    if ($resolvedTestDirectory -ne $expectedTestDirectory -or
+        [IO.Path]::GetFileName($resolvedTestDirectory) -ne $testDirectoryName -or
+        [IO.Path]::GetDirectoryName($resolvedTestDirectory) -ne $tempRoot.TrimEnd([IO.Path]::DirectorySeparatorChar)) {
+        throw "Refusing to remove an unexpected test directory: $resolvedTestDirectory"
+    }
+    Remove-Item -LiteralPath $resolvedTestDirectory -Recurse -Force
+}
+
+exit $exitCode

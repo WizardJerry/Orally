@@ -192,9 +192,9 @@ several inputs while its implementation only forwards through ASR, processing,
 and insertion. `orally-speech` is the shared production seam, but deleting the
 old demo pipeline is still a separate cleanup decision.
 
-The Desktop WebView also keeps demonstration shortcut selections in
-`localStorage`. Those selections are not the runtime `hotkey.preset` and are not
-part of the full Portable Installation contract.
+Desktop captures the dictation shortcut directly and saves it in
+`hotkey.preset`; saving immediately updates its Windows registration. The
+browser preview uses its own local configuration for UI verification.
 
 ## 5. Capability Status
 
@@ -231,7 +231,7 @@ complete recording is retained in memory before the requests are created.
 | History | Desktop can append raw and final text to JSONL | Local History has reviewed retention, opt-in Raw Transcript, states, and recovery |
 | Long recordings | Complete audio is held in memory, then ASR requests are split | Audio Segments are written progressively and cleaned or retained deliberately |
 | Refinement | CLI voice commands use raw or `BuiltInTextProcessor`; AI is explicit in `process --ai` | Product language identifies AI Post-processing as preferred; a separate review decides whether and when the developer-facing CLI adopts that policy |
-| Trigger | Desktop reads a fixed preset at startup; `listen` hard-codes one shortcut | Global Trigger capture, conflict validation, and immediate registration are deferred |
+| Trigger | Desktop captures and registers configurable shortcuts immediately; `listen` hard-codes one shortcut | CLI shortcut unification remains deferred |
 | Provider configuration | Flat TOML sections and optional environment variables | Service Connections and Default Service Slots are deferred |
 
 [CONTEXT](../../CONTEXT.md) defines vocabulary, not implementation completion.
@@ -278,8 +278,8 @@ audio-to-Final-Text path:
     orally-desktop -----/                \-> orally-llm -> orally-core
                                         \-> orally-core
 
-`orally-speech` owns the typed runtime plan, ASR protocol parsing and automatic
-inference, concrete ASR adapter construction, Raw/Local/AI refinement selection,
+`orally-speech` owns the typed runtime plan, ASR protocol parsing and adapter
+selection, concrete ASR adapter construction, Raw/Local/AI refinement selection,
 AI-to-local fallback, default dictionary assembly, and a structured outcome.
 
 Its runtime interface is deliberately narrow:
@@ -413,7 +413,7 @@ stage silently authorizes the next.
 - **Interface:** production callers construct `SpeechProcessor` from a typed
   runtime plan and call `process(AudioInput)`.
 - **Implementation hidden by the seam:**
-  - ASR protocol aliases and `auto` inference;
+  - ASR protocol aliases and `auto` HTTP endpoint/audio-format negotiation;
   - concrete multipart or chat-audio adapter construction;
   - direct-or-named-environment Provider Credential resolution;
   - Raw Transcript preservation;
@@ -430,7 +430,7 @@ stage silently authorizes the next.
 - **Must not touch:** existing callers, persisted config schema, external
   request shapes, third-party dependency versions, or the old demo pipeline.
 - **Verification:** focused interface tests cover Raw, Local, AI success, AI
-  failure with and without fallback, ASR failure, protocol parsing/inference,
+  failure with and without fallback, ASR failure, protocol parsing/normalization,
   credential redaction, and call order; new-crate strict Clippy passes.
 - **Rollback:** remove the workspace member and new crate if its interface is
   wider than the duplicated behavior it hides.
@@ -626,3 +626,46 @@ approves it.
   `orally-storage` Clippy, and unchanged CLI smoke behavior pass.
 - **Stop:** report E1 independently before drafting Config I/O tests or another
   backend capability.
+
+## 16. Active Model Configuration Editor
+
+- **Status:** Active, requested directly by the user on 2026-10-04 for `develop`.
+- **Problem:** Home profile cards only change titles, and added model/Prompt
+  nodes are DOM-only demonstrations that disappear on reload or save.
+- **Behavior:** merge home and pipeline into one editor with profile switching,
+  saving, importing, exporting, creating, and renaming at the top; stack ASR
+  above editable post-processing model/Prompt nodes. ASR exposes service URL,
+  model, and plaintext API Key; post-processing retains Prompt. ASR automatically
+  negotiates
+  OpenAI-compatible transcriptions or Chat Audio, with the selector hidden
+  (user refinement on 2026-10-08). Support
+  enabling, removal, and ordering with drafts preserved on switch. The tray lists
+  saved profiles, marks the active one with a dot, and switches it immediately.
+  Settings omits output language and config-path controls, keeps only the
+  captured dictation shortcut, and stores config beside the executable
+  (user refinement on 2026-10-09).
+  A further 2026-10-09 refinement removes ASR Prompt from configuration and
+  speech-command options, leaving recognition vocabulary for a future dictionary
+  feature. Legacy ASR Prompt values are ignored on load and removed on resave.
+  Configuration help omits development notes. Dictionary support remains deferred.
+- **Persistence:** self-contained profiles in existing TOML, with selected
+  profile fields mirrored at the top level for old readers. Global output,
+  audio, privacy, and shortcuts remain outside profiles. See
+  [ADR-0008](../adr/0008-edit-self-contained-model-profiles.md) for the scoped
+  exception to the deferred shared-Workflow design.
+- **Execution:** enabled AI models process sequentially; enabled Prompt children
+  compose each model's instructions. Preserve raw output and existing local
+  fallback behavior. CLI speech commands remove ASR Prompt input; their other
+  behavior and text post-processing Prompt options remain unchanged. Chat Audio
+  Data URLs retain only optional language context; raw Base64 Chat Audio keeps
+  its fixed transcription instruction.
+- **Testing surface:** the global test records Voice Input with the current
+  unsaved profile and global settings. ASR recording tests bypass refinement;
+  text tests retain refinement-only coverage. No upload is required, and tests
+  never persist configuration, insert output, or write history. Cancellation and
+  closure release recording resources.
+- **Verification:** old/new TOML round trips including ignored legacy ASR Prompt
+  values and their removal on resave, draft switching and import
+  validation, node ordering, real loopback sequential model requests, Rust
+  workspace tests, frontend state tests, formatting, paired docs, and a browser
+  interaction/layout check.

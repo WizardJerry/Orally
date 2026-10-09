@@ -124,6 +124,14 @@ impl CpalRecordingSession {
         self.started_at.elapsed()
     }
 
+    /// Returns the current PCM16 capture size without copying recorded samples.
+    pub fn captured_byte_len(&self) -> Result<usize, OrallyError> {
+        self.samples
+            .lock()
+            .map(|samples| samples.len().saturating_mul(std::mem::size_of::<i16>()))
+            .map_err(|error| OrallyError::Audio(error.to_string()))
+    }
+
     pub fn recent_metrics(
         &self,
         window: Duration,

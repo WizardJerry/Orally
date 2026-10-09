@@ -18,7 +18,8 @@ $documentPairs = @(
   @("docs/adr/0004-keep-portable-data-with-the-application.md", "docs/adr/0004-keep-portable-data-with-the-application.zh-CN.md"),
   @("docs/adr/0005-use-hybrid-portable-storage.md", "docs/adr/0005-use-hybrid-portable-storage.zh-CN.md"),
   @("docs/adr/0006-store-workflows-in-sqlite-and-modules-as-toml.md", "docs/adr/0006-store-workflows-in-sqlite-and-modules-as-toml.zh-CN.md"),
-  @("docs/adr/0007-stream-long-recordings-through-audio-segments.md", "docs/adr/0007-stream-long-recordings-through-audio-segments.zh-CN.md")
+  @("docs/adr/0007-stream-long-recordings-through-audio-segments.md", "docs/adr/0007-stream-long-recordings-through-audio-segments.zh-CN.md"),
+  @("docs/adr/0008-edit-self-contained-model-profiles.md", "docs/adr/0008-edit-self-contained-model-profiles.zh-CN.md")
 )
 
 function Resolve-RepoPath([string]$relativePath) {

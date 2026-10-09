@@ -5,7 +5,7 @@
 //! responsibilities.
 
 use orally_asr::{
-    ChatAudioAsrConfig, ChatAudioAsrProvider, OpenAiCompatibleAsrConfig,
+    AutoAsrProvider, ChatAudioAsrConfig, ChatAudioAsrProvider, OpenAiCompatibleAsrConfig,
     OpenAiCompatibleAsrProvider,
 };
 use orally_core::{
@@ -17,6 +17,7 @@ use std::env;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::str::FromStr;
+use std::time::Duration;
 
 #[derive(Clone, PartialEq, Eq)]
 /// A credential supplied directly or read from a named environment variable.
@@ -65,28 +66,10 @@ impl Debug for CredentialSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// The request shape used by an OpenAI-compatible ASR provider.
 pub enum AsrProtocol {
+    /// Negotiates compatible formats from HTTP responses, without host or model inference.
     Auto,
     OpenAiTranscriptions,
     ChatAudio,
-}
-
-impl AsrProtocol {
-    fn resolve(self, base_url: &str, model: &str) -> Self {
-        if self != Self::Auto {
-            return self;
-        }
-
-        let base_url = base_url.to_ascii_lowercase();
-        let model = model.to_ascii_lowercase();
-        if base_url.contains("openrouter.ai")
-            || base_url.contains("maas.aliyuncs.com")
-            || model.contains("qwen3-asr")
-        {
-            Self::ChatAudio
-        } else {
-            Self::OpenAiTranscriptions
-        }
-    }
 }
 
 impl FromStr for AsrProtocol {
@@ -173,7 +156,6 @@ pub struct RecognitionPlan {
     pub credential: CredentialSource,
     pub protocol: AsrProtocol,
     pub language: Option<String>,
-    pub prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +175,8 @@ pub enum RefinementPlan {
     Raw,
     LocalBasicCleanup,
     AiPostprocessing(AiPostprocessPlan),
+    /// Runs models in order, passing each model's text to the next model.
+    AiPipeline(Vec<AiPostprocessPlan>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,6 +200,7 @@ pub struct SpeechProcessor {
     asr: Box<dyn AsrProvider>,
     refinement: RuntimeRefinement,
     locale: String,
+    request_timeout: Duration,
 }
 
 enum RuntimeRefinement {
@@ -225,6 +210,21 @@ enum RuntimeRefinement {
         processor: AiProcessor,
         fallback_to_local_basic_cleanup: bool,
     },
+    AiPipeline(Vec<RuntimeAiStep>),
+}
+
+struct RuntimeAiStep {
+    processor: AiProcessor,
+    fallback_to_local_basic_cleanup: bool,
+}
+
+impl From<AiPostprocessPlan> for RuntimeAiStep {
+    fn from(plan: AiPostprocessPlan) -> Self {
+        Self {
+            fallback_to_local_basic_cleanup: plan.fallback_to_local_basic_cleanup,
+            processor: AiProcessor::Plan(plan),
+        }
+    }
 }
 
 enum AiProcessor {
@@ -233,54 +233,51 @@ enum AiProcessor {
     Adapter(Box<dyn TextProcessor>),
 }
 
-impl SpeechProcessor {
-    /// Builds the recognition adapter and stores refinement settings.
-    pub fn new(plan: SpeechPlan) -> Result<Self, SpeechBuildError> {
-        let asr = build_asr_provider(plan.recognition)?;
-        let refinement = match plan.refinement {
-            RefinementPlan::Raw => RuntimeRefinement::Raw,
-            RefinementPlan::LocalBasicCleanup => RuntimeRefinement::LocalBasicCleanup,
-            RefinementPlan::AiPostprocessing(plan) => RuntimeRefinement::Ai {
+impl From<RefinementPlan> for RuntimeRefinement {
+    fn from(plan: RefinementPlan) -> Self {
+        match plan {
+            RefinementPlan::Raw => Self::Raw,
+            RefinementPlan::LocalBasicCleanup => Self::LocalBasicCleanup,
+            RefinementPlan::AiPostprocessing(plan) => Self::Ai {
                 fallback_to_local_basic_cleanup: plan.fallback_to_local_basic_cleanup,
                 processor: AiProcessor::Plan(plan),
             },
-        };
+            RefinementPlan::AiPipeline(plans) => {
+                Self::AiPipeline(plans.into_iter().map(RuntimeAiStep::from).collect())
+            }
+        }
+    }
+}
 
+impl SpeechProcessor {
+    /// Builds the recognition adapter and stores refinement settings.
+    pub fn new(plan: SpeechPlan) -> Result<Self, SpeechBuildError> {
+        Self::new_with_timeout(plan, Duration::from_secs(120))
+    }
+
+    /// Builds a processor with a time limit for each external request.
+    pub fn new_with_timeout(
+        plan: SpeechPlan,
+        request_timeout: Duration,
+    ) -> Result<Self, SpeechBuildError> {
+        let asr = build_asr_provider(plan.recognition, request_timeout)?;
         Ok(Self {
             asr,
-            refinement,
+            refinement: plan.refinement.into(),
             locale: plan.locale,
+            request_timeout,
         })
     }
 
     /// Recognizes one audio input and applies the configured refinement path.
     pub fn process(&self, audio: AudioInput) -> Result<SpeechOutcome, OrallyError> {
         let transcript = self.asr.transcribe(audio)?;
-        let raw_transcript = transcript.clone();
-
-        let processed = match &self.refinement {
-            RuntimeRefinement::Raw => ProcessedText {
-                text: transcript.text,
-                changes: Vec::new(),
-            },
-            RuntimeRefinement::LocalBasicCleanup => {
-                run_local_cleanup(process_input(transcript, &self.locale))?
-            }
-            RuntimeRefinement::Ai {
-                processor,
-                fallback_to_local_basic_cleanup,
-            } => run_ai_refinement(
-                processor,
-                process_input(transcript, &self.locale),
-                *fallback_to_local_basic_cleanup,
-            )?,
-        };
-
-        Ok(SpeechOutcome {
-            raw_transcript,
-            final_text: processed.text,
-            changes: processed.changes,
-        })
+        apply_refinement(
+            &self.refinement,
+            transcript,
+            &self.locale,
+            self.request_timeout,
+        )
     }
 
     #[cfg(test)]
@@ -303,41 +300,108 @@ impl SpeechProcessor {
                 fallback_to_local_basic_cleanup: plan.fallback_to_local_basic_cleanup,
                 processor: AiProcessor::Plan(plan),
             },
+            TestRefinement::AiPipeline(steps) => RuntimeRefinement::AiPipeline(
+                steps
+                    .into_iter()
+                    .map(
+                        |(processor, fallback_to_local_basic_cleanup)| RuntimeAiStep {
+                            processor: AiProcessor::Adapter(processor),
+                            fallback_to_local_basic_cleanup,
+                        },
+                    )
+                    .collect(),
+            ),
+            TestRefinement::AiPipelinePlan(plans) => {
+                RuntimeRefinement::AiPipeline(plans.into_iter().map(RuntimeAiStep::from).collect())
+            }
         };
 
         Self {
             asr,
             refinement,
             locale: locale.into(),
+            request_timeout: Duration::from_secs(120),
         }
     }
 }
 
-fn build_asr_provider(plan: RecognitionPlan) -> Result<Box<dyn AsrProvider>, SpeechBuildError> {
+/// Applies the normal refinement path to text supplied without speech recognition.
+pub fn refine_transcript(
+    plan: RefinementPlan,
+    transcript: Transcript,
+    locale: &str,
+    request_timeout: Duration,
+) -> Result<SpeechOutcome, OrallyError> {
+    apply_refinement(&plan.into(), transcript, locale, request_timeout)
+}
+
+fn apply_refinement(
+    refinement: &RuntimeRefinement,
+    transcript: Transcript,
+    locale: &str,
+    request_timeout: Duration,
+) -> Result<SpeechOutcome, OrallyError> {
+    let raw_transcript = transcript.clone();
+    let processed = match refinement {
+        RuntimeRefinement::Raw => ProcessedText {
+            text: transcript.text,
+            changes: Vec::new(),
+        },
+        RuntimeRefinement::LocalBasicCleanup => {
+            run_local_cleanup(process_input(transcript, locale))?
+        }
+        RuntimeRefinement::Ai {
+            processor,
+            fallback_to_local_basic_cleanup,
+        } => run_ai_refinement(
+            processor,
+            process_input(transcript, locale),
+            *fallback_to_local_basic_cleanup,
+            request_timeout,
+        )?,
+        RuntimeRefinement::AiPipeline(steps) => {
+            run_ai_pipeline(steps, process_input(transcript, locale), request_timeout)?
+        }
+    };
+    Ok(SpeechOutcome {
+        raw_transcript,
+        final_text: processed.text,
+        changes: processed.changes,
+    })
+}
+
+fn build_asr_provider(
+    plan: RecognitionPlan,
+    request_timeout: Duration,
+) -> Result<Box<dyn AsrProvider>, SpeechBuildError> {
     let api_key = plan.credential.resolve().ok_or_else(|| {
         SpeechBuildError::MissingRecognitionCredential {
             environment_variable: plan.credential.environment_variable().to_string(),
         }
     })?;
 
-    match plan.protocol.resolve(&plan.base_url, &plan.model) {
-        AsrProtocol::OpenAiTranscriptions => {
+    match plan.protocol {
+        AsrProtocol::Auto | AsrProtocol::OpenAiTranscriptions => {
             let mut config = OpenAiCompatibleAsrConfig::new(plan.base_url, api_key, plan.model);
             config.language = plan.language;
-            config.prompt = plan.prompt;
-            OpenAiCompatibleAsrProvider::new(config)
-                .map(|provider| Box::new(provider) as Box<dyn AsrProvider>)
-                .map_err(SpeechBuildError::RecognitionAdapter)
+            config.timeout = request_timeout;
+            if plan.protocol == AsrProtocol::Auto {
+                AutoAsrProvider::new(config)
+                    .map(|provider| Box::new(provider) as Box<dyn AsrProvider>)
+            } else {
+                OpenAiCompatibleAsrProvider::new(config)
+                    .map(|provider| Box::new(provider) as Box<dyn AsrProvider>)
+            }
+            .map_err(SpeechBuildError::RecognitionAdapter)
         }
         AsrProtocol::ChatAudio => {
             let mut config = ChatAudioAsrConfig::new(plan.base_url, api_key, plan.model);
             config.language = plan.language;
-            config.prompt = plan.prompt;
+            config.timeout = request_timeout;
             ChatAudioAsrProvider::new(config)
                 .map(|provider| Box::new(provider) as Box<dyn AsrProvider>)
                 .map_err(SpeechBuildError::RecognitionAdapter)
         }
-        AsrProtocol::Auto => unreachable!("auto protocol resolves before provider construction"),
     }
 }
 
@@ -345,10 +409,11 @@ fn run_ai_refinement(
     source: &AiProcessor,
     input: ProcessInput,
     fallback_to_local_basic_cleanup: bool,
+    request_timeout: Duration,
 ) -> Result<ProcessedText, OrallyError> {
     match source {
         AiProcessor::Plan(plan) => {
-            let processor = build_ai_processor(plan)?;
+            let processor = build_ai_processor(plan, request_timeout)?;
             apply_ai_processor(&processor, input, fallback_to_local_basic_cleanup)
         }
         #[cfg(test)]
@@ -358,7 +423,62 @@ fn run_ai_refinement(
     }
 }
 
-fn build_ai_processor(plan: &AiPostprocessPlan) -> Result<OpenAiChatPostprocessor, OrallyError> {
+fn run_ai_pipeline(
+    steps: &[RuntimeAiStep],
+    mut input: ProcessInput,
+    request_timeout: Duration,
+) -> Result<ProcessedText, OrallyError> {
+    let mut changes = Vec::new();
+    for (index, step) in steps.iter().enumerate() {
+        let processed = run_ai_refinement(
+            &step.processor,
+            input.clone(),
+            step.fallback_to_local_basic_cleanup,
+            request_timeout,
+        )
+        .map_err(|error| annotate_model_failure(error, index, &step.processor))?;
+        input.transcript.text = processed.text;
+        // Recognition timestamps describe the original text, not model output.
+        input.transcript.segments.clear();
+        changes.extend(processed.changes.into_iter().map(|change| {
+            if change.starts_with("AI postprocessor failed") {
+                format!("post-processing model node {}: {change}", index + 1)
+            } else {
+                change
+            }
+        }));
+    }
+
+    Ok(ProcessedText {
+        text: input.transcript.text,
+        changes,
+    })
+}
+
+fn annotate_model_failure(
+    error: OrallyError,
+    index: usize,
+    processor: &AiProcessor,
+) -> OrallyError {
+    let model = match processor {
+        AiProcessor::Plan(plan) => format!(" ({})", plan.model),
+        #[cfg(test)]
+        AiProcessor::Adapter(_) => String::new(),
+    };
+    let prefix = format!("post-processing model node {}{model} failed: ", index + 1);
+    match error {
+        OrallyError::InvalidInput(message) => OrallyError::InvalidInput(prefix + &message),
+        OrallyError::Audio(message) => OrallyError::Audio(prefix + &message),
+        OrallyError::Asr(message) => OrallyError::Asr(prefix + &message),
+        OrallyError::Processing(message) => OrallyError::Processing(prefix + &message),
+        OrallyError::Insertion(message) => OrallyError::Insertion(prefix + &message),
+    }
+}
+
+fn build_ai_processor(
+    plan: &AiPostprocessPlan,
+    request_timeout: Duration,
+) -> Result<OpenAiChatPostprocessor, OrallyError> {
     let api_key = plan.credential.resolve().ok_or_else(|| {
         OrallyError::InvalidInput(format!(
             "missing postprocess API key: set postprocess.api_key or env var {}",
@@ -369,6 +489,7 @@ fn build_ai_processor(plan: &AiPostprocessPlan) -> Result<OpenAiChatPostprocesso
         OpenAiChatPostprocessorConfig::new(plan.base_url.clone(), api_key, plan.model.clone());
     config.system_prompt = plan.system_prompt.clone();
     config.user_template = plan.user_template.clone();
+    config.timeout = request_timeout;
     OpenAiChatPostprocessor::new(config)
 }
 
@@ -428,13 +549,20 @@ enum TestRefinement {
         fallback_to_local_basic_cleanup: bool,
     },
     AiPlan(AiPostprocessPlan),
+    AiPipeline(Vec<(Box<dyn TextProcessor>, bool)>),
+    AiPipelinePlan(Vec<AiPostprocessPlan>),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orally_core::TranscriptSegment;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     struct FakeAsr {
         result: Result<Transcript, OrallyError>,
@@ -460,6 +588,32 @@ mod tests {
         }
     }
 
+    struct RecordingProcessor {
+        result: Result<ProcessedText, OrallyError>,
+        inputs: Arc<Mutex<Vec<ProcessInput>>>,
+    }
+
+    impl TextProcessor for RecordingProcessor {
+        fn process(&self, input: ProcessInput) -> Result<ProcessedText, OrallyError> {
+            self.inputs.lock().unwrap().push(input);
+            self.result.clone()
+        }
+    }
+
+    fn recording_step(
+        result: Result<ProcessedText, OrallyError>,
+        inputs: &Arc<Mutex<Vec<ProcessInput>>>,
+        fallback: bool,
+    ) -> (Box<dyn TextProcessor>, bool) {
+        (
+            Box::new(RecordingProcessor {
+                result,
+                inputs: inputs.clone(),
+            }),
+            fallback,
+        )
+    }
+
     fn transcript(text: &str) -> Transcript {
         Transcript {
             text: text.to_string(),
@@ -473,6 +627,160 @@ mod tests {
         calls: Arc<AtomicUsize>,
     ) -> Box<dyn AsrProvider> {
         Box::new(FakeAsr { result, calls })
+    }
+
+    #[test]
+    fn auto_recognition_uses_standard_transcription_on_a_generic_host() {
+        let models = ["renamed-asr", "provider/transcriber-v2", "audio-model"];
+        let (base_url, server) = serve_recognition_responses(
+            models
+                .iter()
+                .map(|_| "{\"text\":\"recognized speech\",\"language\":\"zh\"}".to_string())
+                .collect(),
+        );
+        for model in models {
+            let processor = SpeechProcessor::new_with_timeout(
+                SpeechPlan {
+                    recognition: RecognitionPlan {
+                        base_url: base_url.clone(),
+                        model: model.to_string(),
+                        credential: CredentialSource::new(Some("fixture-key".to_string()), ""),
+                        protocol: AsrProtocol::Auto,
+                        language: Some("zh".to_string()),
+                    },
+                    refinement: RefinementPlan::Raw,
+                    locale: "zh-CN".to_string(),
+                },
+                Duration::from_secs(5),
+            )
+            .unwrap();
+
+            let result = processor.process(AudioInput {
+                bytes: vec![0, 0, 1, 0],
+                sample_rate_hz: 16_000,
+                channels: 1,
+                format: orally_core::AudioFormat::Pcm16,
+            });
+            let outcome = result.unwrap();
+            assert_eq!(outcome.raw_transcript.text, "recognized speech");
+            assert_eq!(outcome.final_text, "recognized speech");
+        }
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), models.len());
+        for (request, model) in requests.iter().zip(models) {
+            assert!(
+                request.starts_with("POST /v1/audio/transcriptions "),
+                "Auto must use standard multipart transcription; sent {}",
+                request.lines().next().unwrap()
+            );
+            assert!(request.contains("multipart/form-data"));
+            assert!(request.contains("authorization: Bearer fixture-key"));
+            assert!(request.contains(model));
+            assert!(!request.contains("name=\"prompt\""));
+            assert!(request.contains("name=\"language\"\r\n\r\nzh"));
+            assert!(request.contains("RIFF"));
+            assert!(request.contains("WAVE"));
+        }
+    }
+
+    #[test]
+    fn auto_negotiates_chat_data_url_after_missing_transcription_endpoint() {
+        let (base_url, server) = serve_negotiation_responses(vec![
+            (
+                "404 Not Found",
+                "{\"error\":\"route unavailable\"}".to_string(),
+            ),
+            (
+                "200 OK",
+                "{\"choices\":[{\"message\":{\"content\":\"recognized speech\"}}]}".to_string(),
+            ),
+        ]);
+        let processor = SpeechProcessor::new_with_timeout(
+            SpeechPlan {
+                recognition: RecognitionPlan {
+                    base_url,
+                    model: "audio-transcriber".to_string(),
+                    credential: CredentialSource::new(Some("fixture-key".to_string()), ""),
+                    protocol: AsrProtocol::Auto,
+                    language: Some("zh".to_string()),
+                },
+                refinement: RefinementPlan::Raw,
+                locale: "zh-CN".to_string(),
+            },
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let result = processor.process(AudioInput {
+            bytes: vec![0, 0, 1, 0],
+            sample_rate_hz: 16_000,
+            channels: 1,
+            format: orally_core::AudioFormat::Pcm16,
+        });
+        let requests = server.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "Auto should negotiate a compatible chat route after HTTP 404: {result:?}"
+        );
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("POST /v1/audio/transcriptions "));
+        assert!(requests[1].starts_with("POST /v1/chat/completions "));
+        assert!(requests[1].contains("data:audio/wav;base64,"));
+        assert!(!requests[1].contains("\"format\""));
+        assert!(requests[1].contains("\"role\":\"system\""));
+        assert!(requests[1].contains("Language hint: zh"));
+        assert!(!requests[1].contains("Please transcribe"));
+        assert_eq!(result.unwrap().final_text, "recognized speech");
+    }
+
+    #[test]
+    fn recognition_and_refinement_share_a_full_service_url_and_credential() {
+        let (base_url, server) = serve_recognition_responses(vec![
+            "{\"text\":\"raw speech\"}".to_string(),
+            "{\"choices\":[{\"message\":{\"content\":\"final speech\"}}]}".to_string(),
+        ]);
+        let shared_url = format!(" {base_url}/chat/completions/?route=shared#ignored ");
+        let credential = CredentialSource::new(Some("shared-fixture-key".to_string()), "");
+        let processor = SpeechProcessor::new_with_timeout(
+            SpeechPlan {
+                recognition: RecognitionPlan {
+                    base_url: shared_url.clone(),
+                    model: "shared-asr-model".to_string(),
+                    credential: credential.clone(),
+                    protocol: AsrProtocol::Auto,
+                    language: None,
+                },
+                refinement: RefinementPlan::AiPostprocessing(AiPostprocessPlan {
+                    base_url: shared_url,
+                    model: "shared-llm-model".to_string(),
+                    credential,
+                    system_prompt: "Preserve the meaning".to_string(),
+                    user_template: "{{transcript}}".to_string(),
+                    fallback_to_local_basic_cleanup: false,
+                }),
+                locale: "en-US".to_string(),
+            },
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let result = processor.process(AudioInput {
+            bytes: vec![0, 0, 1, 0],
+            sample_rate_hz: 16_000,
+            channels: 1,
+            format: orally_core::AudioFormat::Pcm16,
+        });
+        let requests = server.join().unwrap();
+        let outcome = result.unwrap();
+        assert_eq!(outcome.raw_transcript.text, "raw speech");
+        assert_eq!(outcome.final_text, "final speech");
+        assert!(requests[0].starts_with("POST /v1/audio/transcriptions?route=shared "));
+        assert!(requests[0].contains("multipart/form-data"));
+        assert!(requests[0].contains("shared-asr-model"));
+        assert!(requests[1].starts_with("POST /v1/chat/completions?route=shared "));
+        assert!(requests[1].contains("\"model\":\"shared-llm-model\""));
+        assert!(requests[1].contains("\"content\":\"raw speech\""));
+        for request in requests {
+            assert!(request.contains("authorization: Bearer shared-fixture-key"));
+        }
     }
 
     #[test]
@@ -586,6 +894,322 @@ mod tests {
     }
 
     #[test]
+    fn ai_pipeline_passes_text_in_order_and_preserves_raw_transcript() {
+        let inputs = Arc::new(Mutex::new(Vec::new()));
+        let mut raw = transcript("raw speech");
+        raw.segments.push(TranscriptSegment {
+            start_ms: 0,
+            end_ms: 1000,
+            text: raw.text.clone(),
+            confidence: Some(0.9),
+        });
+        let processor = SpeechProcessor::with_adapters(
+            fake_asr(Ok(raw.clone()), Arc::new(AtomicUsize::new(0))),
+            TestRefinement::AiPipeline(vec![
+                recording_step(
+                    Ok(ProcessedText {
+                        text: "first output".to_string(),
+                        changes: vec!["first model".to_string()],
+                    }),
+                    &inputs,
+                    false,
+                ),
+                recording_step(
+                    Ok(ProcessedText {
+                        text: "final output".to_string(),
+                        changes: vec!["second model".to_string()],
+                    }),
+                    &inputs,
+                    false,
+                ),
+            ]),
+            "zh-CN",
+        );
+
+        let outcome = processor.process(AudioInput::demo_text("ignored")).unwrap();
+        let inputs = inputs.lock().unwrap();
+
+        assert_eq!(outcome.raw_transcript, raw);
+        assert_eq!(outcome.final_text, "final output");
+        assert_eq!(outcome.changes, ["first model", "second model"]);
+        assert_eq!(inputs[0].transcript, raw);
+        assert_eq!(inputs[1].transcript.text, "first output");
+        assert_eq!(inputs[1].transcript.language, raw.language);
+        assert!(inputs[1].transcript.segments.is_empty());
+        assert_eq!(inputs[1].context.locale, "zh-CN");
+    }
+
+    #[test]
+    fn empty_ai_pipeline_returns_raw_text() {
+        let processor = SpeechProcessor::with_adapters(
+            fake_asr(Ok(transcript("嗯 raw")), Arc::new(AtomicUsize::new(0))),
+            TestRefinement::AiPipeline(Vec::new()),
+            "en-US",
+        );
+
+        let outcome = processor.process(AudioInput::demo_text("ignored")).unwrap();
+
+        assert_eq!(outcome.final_text, "嗯 raw");
+        assert!(outcome.changes.is_empty());
+    }
+
+    #[test]
+    fn ai_pipeline_continues_after_local_fallback() {
+        let inputs = Arc::new(Mutex::new(Vec::new()));
+        let processor = SpeechProcessor::with_adapters(
+            fake_asr(
+                Ok(transcript("嗯 hello world")),
+                Arc::new(AtomicUsize::new(0)),
+            ),
+            TestRefinement::AiPipeline(vec![
+                recording_step(
+                    Err(OrallyError::Processing("offline".to_string())),
+                    &inputs,
+                    true,
+                ),
+                recording_step(
+                    Ok(ProcessedText {
+                        text: "final output".to_string(),
+                        changes: vec!["second model".to_string()],
+                    }),
+                    &inputs,
+                    false,
+                ),
+            ]),
+            "en-US",
+        );
+
+        let outcome = processor.process(AudioInput::demo_text("ignored")).unwrap();
+
+        assert_eq!(inputs.lock().unwrap()[1].transcript.text, "hello world.");
+        assert_eq!(outcome.final_text, "final output");
+        assert!(outcome
+            .changes
+            .iter()
+            .any(|change| change.contains("offline")));
+        assert_eq!(outcome.changes.last().unwrap(), "second model");
+    }
+
+    #[test]
+    fn ai_pipeline_stops_after_failure_without_fallback() {
+        let inputs = Arc::new(Mutex::new(Vec::new()));
+        let processor = SpeechProcessor::with_adapters(
+            fake_asr(Ok(transcript("raw")), Arc::new(AtomicUsize::new(0))),
+            TestRefinement::AiPipeline(vec![
+                recording_step(
+                    Err(OrallyError::Processing("offline".to_string())),
+                    &inputs,
+                    false,
+                ),
+                recording_step(
+                    Ok(ProcessedText {
+                        text: "should not run".to_string(),
+                        changes: Vec::new(),
+                    }),
+                    &inputs,
+                    true,
+                ),
+            ]),
+            "zh-CN",
+        );
+
+        let error = processor
+            .process(AudioInput::demo_text("ignored"))
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            OrallyError::Processing("post-processing model node 1 failed: offline".to_string())
+        );
+        assert_eq!(inputs.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ai_pipeline_missing_credential_does_not_fallback() {
+        let asr_calls = Arc::new(AtomicUsize::new(0));
+        let processor = SpeechProcessor::with_adapters(
+            fake_asr(Ok(transcript("raw")), asr_calls.clone()),
+            TestRefinement::AiPipelinePlan(vec![AiPostprocessPlan {
+                base_url: "http://127.0.0.1:1/v1".to_string(),
+                model: "model".to_string(),
+                credential: CredentialSource::new(None, ""),
+                system_prompt: "system".to_string(),
+                user_template: "{{transcript}}".to_string(),
+                fallback_to_local_basic_cleanup: true,
+            }]),
+            "zh-CN",
+        );
+
+        let error = processor
+            .process(AudioInput::demo_text("ignored"))
+            .unwrap_err();
+
+        assert_eq!(asr_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            error,
+            OrallyError::InvalidInput(
+                "post-processing model node 1 (model) failed: missing postprocess API key: set postprocess.api_key or env var ".to_string()
+            )
+        );
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> String {
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let count = stream.read(&mut buffer).expect("read local request");
+            assert!(
+                count > 0,
+                "client disconnected before the request was complete"
+            );
+            request.extend_from_slice(&buffer[..count]);
+            if let Some(header_end) = request.windows(4).position(|value| value == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .expect("request includes content length");
+                if request.len() >= header_end + 4 + content_length {
+                    return String::from_utf8_lossy(&request).to_string();
+                }
+            }
+        }
+    }
+
+    fn serve_recognition_responses(
+        responses: Vec<String>,
+    ) -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for body in responses {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "ASR did not send its request");
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("accept local request: {error}"),
+                    }
+                };
+                requests.push(read_http_request(&mut stream));
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+            requests
+        });
+        (base_url, server)
+    }
+
+    fn serve_negotiation_responses(
+        responses: Vec<(&'static str, String)>,
+    ) -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, body) in responses {
+                let deadline = Instant::now() + Duration::from_secs(1);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if Instant::now() >= deadline {
+                                return requests;
+                            }
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("accept local request: {error}"),
+                    }
+                };
+                requests.push(read_http_request(&mut stream));
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+            requests
+        });
+        (base_url, server)
+    }
+
+    #[test]
+    fn ai_pipeline_sends_each_models_prompt_and_previous_output_over_http() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for text in ["first output", "final output"] {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "model did not send its request");
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("accept local request: {error}"),
+                    }
+                };
+                requests.push(read_http_request(&mut stream));
+                let body = format!("{{\"choices\":[{{\"message\":{{\"content\":\"{text}\"}}}}]}}");
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            requests
+        });
+        let plans = [
+            ("first-model", "base\n\nfirst prompt\n\nsecond prompt"),
+            ("second-model", "second instructions"),
+        ]
+        .into_iter()
+        .map(|(model, system_prompt)| AiPostprocessPlan {
+            base_url: format!("http://{address}/v1"),
+            model: model.to_string(),
+            credential: CredentialSource::new(Some("test-key".to_string()), ""),
+            system_prompt: system_prompt.to_string(),
+            user_template: "{{locale}}: {{transcript}}".to_string(),
+            fallback_to_local_basic_cleanup: false,
+        })
+        .collect();
+        let processor = SpeechProcessor::with_adapters(
+            fake_asr(Ok(transcript("raw speech")), Arc::new(AtomicUsize::new(0))),
+            TestRefinement::AiPipelinePlan(plans),
+            "zh-CN",
+        );
+
+        let outcome = processor.process(AudioInput::demo_text("ignored"));
+        let requests = server.join().unwrap();
+        let outcome = outcome.expect("both model requests should succeed");
+
+        assert_eq!(outcome.raw_transcript.text, "raw speech");
+        assert_eq!(outcome.final_text, "final output");
+        assert_eq!(outcome.changes.len(), 2);
+        assert!(requests[0].starts_with("POST /v1/chat/completions "));
+        assert!(requests[0].contains("\"model\":\"first-model\""));
+        assert!(requests[0].contains("\"content\":\"base\\n\\nfirst prompt\\n\\nsecond prompt\""));
+        assert!(requests[0].contains("\"content\":\"zh-CN: raw speech\""));
+        assert!(requests[1].contains("\"model\":\"second-model\""));
+        assert!(requests[1].contains("\"content\":\"second instructions\""));
+        assert!(requests[1].contains("\"content\":\"zh-CN: first output\""));
+        assert!(!requests[1].contains("raw speech"));
+    }
+
+    #[test]
     fn asr_failure_does_not_run_refinement() {
         let plan = AiPostprocessPlan {
             base_url: "not-a-valid-url".to_string(),
@@ -678,7 +1302,6 @@ mod tests {
                 credential: CredentialSource::new(None, ""),
                 protocol: AsrProtocol::OpenAiTranscriptions,
                 language: None,
-                prompt: None,
             },
             refinement: RefinementPlan::Raw,
             locale: "zh-CN".to_string(),
@@ -714,7 +1337,6 @@ mod tests {
                     credential: CredentialSource::new(Some("test-key".to_string()), ""),
                     protocol,
                     language: None,
-                    prompt: None,
                 },
                 refinement: RefinementPlan::Raw,
                 locale: "zh-CN".to_string(),
@@ -754,7 +1376,7 @@ mod tests {
     }
 
     #[test]
-    fn protocol_aliases_and_auto_inference_match_existing_behavior() {
+    fn protocol_aliases_remain_compatible() {
         assert_eq!(
             "multipart"
                 .parse::<AsrProtocol>()
@@ -767,22 +1389,7 @@ mod tests {
                 .expect("alias should parse"),
             AsrProtocol::ChatAudio
         );
-        assert_eq!(
-            AsrProtocol::Auto.resolve("https://openrouter.ai/api/v1", "model"),
-            AsrProtocol::ChatAudio
-        );
-        assert_eq!(
-            AsrProtocol::Auto.resolve("https://example.maas.aliyuncs.com/v1", "model"),
-            AsrProtocol::ChatAudio
-        );
-        assert_eq!(
-            AsrProtocol::Auto.resolve("https://example.com/v1", "qwen3-asr-flash"),
-            AsrProtocol::ChatAudio
-        );
-        assert_eq!(
-            AsrProtocol::Auto.resolve("https://api.openai.com/v1", "whisper-1"),
-            AsrProtocol::OpenAiTranscriptions
-        );
+        assert_eq!("auto".parse::<AsrProtocol>().unwrap(), AsrProtocol::Auto);
     }
 
     #[test]

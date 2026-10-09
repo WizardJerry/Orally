@@ -24,14 +24,17 @@
         "label": "dictation",
         "title": "Orally Dictation",
         "url": "overlay.html",
-        "width": 380,
-        "height": 96,
+        "width": 300,
+        "height": 88,
         "resizable": false,
         "decorations": false,
+        "transparent": true,
+        "shadow": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
-        "focus": false
+        "focus": false,
+        "focusable": false
       }
     ],
     "security": {

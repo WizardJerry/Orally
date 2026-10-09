@@ -7,6 +7,10 @@ status: accepted
 
 # Compose Modules into one post-processing request
 
+The current configuration-profile editor uses the scoped multi-model exception
+in [ADR-0008](0008-edit-self-contained-model-profiles.md). The shared product
+Workflow and Module design below remains a deferred reference.
+
 Each Workflow performs one Speech-recognition Stage and at most one AI post-processing request. Under [ADR-0007](0007-stream-long-recordings-through-audio-segments.md), the recognition Stage may issue multiple sequential Audio Segment requests, but it produces one ordered Raw Transcript for the Workflow. Rather than invoking a separate model for every refinement step, Orally composes an ordered selection of reusable built-in or user-created Modules into one prompt sent to the Workflow's selected LLM. This replaces the sequential post-processing design in ADR-0001 to reduce latency and cost while making instructions reusable across scenarios.
 
 ## Consequences

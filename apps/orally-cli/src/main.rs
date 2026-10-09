@@ -1,9 +1,7 @@
 use orally_audio::{
     encode_wav_pcm16, CpalAudioRecorder, CpalRecordingSession, RecordedAudio, RecordingConfig,
 };
-use orally_config::{
-    AppConfig, ProviderPreset, ALIYUN_OPENAI_COMPAT_BASE_URL, OPENAI_COMPAT_API_KEY_ENV,
-};
+use orally_config::{AppConfig, ProviderPreset, OPENAI_COMPAT_API_KEY_ENV, OPENAI_COMPAT_BASE_URL};
 use orally_core::{
     AppContext, AudioInput, BuiltInTextProcessor, DemoTextAsrProvider, DictionaryTerm, InsertMode,
     MemoryInserter, OrallyError, OrallyPipeline, PostprocessPrompt, ProcessInput, TextInserter,
@@ -234,7 +232,7 @@ fn run_config(args: &[String]) {
         Some("init") => run_config_init(&args[1..]),
         Some("set") => run_config_set(&args[1..]),
         _ => {
-            eprintln!("Usage: config path | config show | config init [--provider aliyun-openai|openrouter|openai] [--portable] [--force] | config set <key> <value>");
+            eprintln!("Usage: config path | config show | config init [--provider openai-compatible|openai] [--portable] [--force] | config set <key> <value>");
             std::process::exit(2);
         }
     }
@@ -268,9 +266,8 @@ fn run_config_set(args: &[String]) {
 }
 
 fn run_config_init(args: &[String]) {
-    let mut preset = ProviderPreset::AliyunOpenAi;
+    let mut preset = ProviderPreset::OpenAiCompatible;
     let mut force = false;
-    let mut portable = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -287,7 +284,9 @@ fn run_config_init(args: &[String]) {
                 });
             }
             "--force" | "-f" => force = true,
-            "--portable" => portable = true,
+            // Kept for older commands; every configuration now uses the
+            // executable directory.
+            "--portable" => {}
             other => {
                 eprintln!("unknown config init option: {other}");
                 std::process::exit(2);
@@ -298,11 +297,7 @@ fn run_config_init(args: &[String]) {
     }
 
     let config = preset.config();
-    let result = if portable {
-        orally_config::init_portable_config(&config, force)
-    } else {
-        orally_config::init_config(&config, force)
-    };
+    let result = orally_config::init_config(&config, force);
     match result {
         Ok(path) => {
             println!("Wrote {}", path.display());
@@ -399,7 +394,6 @@ fn build_speech_processor(
             credential: CredentialSource::new(options.api_key.clone(), options.api_key_env.clone()),
             protocol: options.protocol,
             language: options.language.clone(),
-            prompt: options.prompt.clone(),
         },
         refinement: if output.raw {
             RefinementPlan::Raw
@@ -801,19 +795,20 @@ fn print_help() {
     println!("  cargo run -p orally-cli -- dictate --seconds 3 --show-changes");
     println!("  cargo run -p orally-cli -- dictate --seconds 3 --insert --paste-delay-ms 1200");
     println!("  cargo run -p orally-cli -- listen --paste-delay-ms 300");
-    println!("  cargo run -p orally-cli -- config init --provider aliyun-openai");
-    println!("  cargo run -p orally-cli -- config init --provider aliyun-openai --portable");
+    println!("  cargo run -p orally-cli -- config init --provider openai-compatible");
     println!("  cargo run -p orally-cli -- config set output.paste_delay_ms 300");
     println!("  cargo run -p orally-cli -- config show");
+    println!();
+    println!("Configuration: config.toml beside the executable.");
+    println!("  --portable is a compatibility alias for the default config init behavior.");
+    println!("  ORALLY_CONFIG is only a legacy migration source when this file is absent.");
     println!();
     println!("ASR environment:");
     println!("  {OPENAI_COMPAT_API_KEY_ENV}  API key used by the OpenAI-compatible preset");
     println!("  ORALLY_ASR_API_KEY       Optional override API key");
-    println!(
-        "  ORALLY_ASR_BASE_URL      Optional override, default {ALIYUN_OPENAI_COMPAT_BASE_URL}"
-    );
+    println!("  ORALLY_ASR_BASE_URL      Optional override, default {OPENAI_COMPAT_BASE_URL}");
     println!("  ORALLY_ASR_MODEL         Optional fallback for --model");
-    println!("  ORALLY_ASR_PROTOCOL      auto, openai-transcriptions, or chat-audio");
+    println!("  ORALLY_ASR_PROTOCOL      Optional override: auto (default), openai-transcriptions, or chat-audio");
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -888,7 +883,6 @@ struct AsrOptions {
     api_key_env: String,
     protocol: AsrProtocol,
     language: Option<String>,
-    prompt: Option<String>,
 }
 
 impl AsrOptions {
@@ -900,7 +894,6 @@ impl AsrOptions {
             api_key_env: config.asr.api_key_env.clone(),
             protocol: config.asr.protocol.parse().unwrap_or(AsrProtocol::Auto),
             language: config.asr.language.clone(),
-            prompt: config.asr.prompt.clone(),
         };
 
         if let Ok(value) = env::var("ORALLY_ASR_BASE_URL") {
@@ -923,9 +916,6 @@ impl AsrOptions {
         if let Ok(value) = env::var("ORALLY_ASR_LANGUAGE") {
             options.language = Some(value);
         }
-        if let Ok(value) = env::var("ORALLY_ASR_PROMPT") {
-            options.prompt = Some(value);
-        }
 
         options
     }
@@ -942,7 +932,6 @@ impl AsrOptions {
                     .map_err(|error| error.to_string())?
             }
             "--language" => self.language = Some(value.to_string()),
-            "--prompt" => self.prompt = Some(value.to_string()),
             other => return Err(format!("unknown ASR option: {other}")),
         }
 
@@ -996,7 +985,7 @@ impl TranscribeOptions {
                     ));
                 }
                 "--base-url" | "--model" | "--api-key" | "--api-key-env" | "--protocol"
-                | "--language" | "--prompt" => {
+                | "--language" => {
                     let flag = args[index].clone();
                     index += 1;
                     let value = args
@@ -1072,7 +1061,7 @@ impl DictateOptions {
                     }
                 }
                 "--base-url" | "--model" | "--api-key" | "--api-key-env" | "--protocol"
-                | "--language" | "--prompt" => {
+                | "--language" => {
                     let flag = args[index].clone();
                     index += 1;
                     let value = args
@@ -1116,6 +1105,18 @@ mod tests {
     }
 
     #[test]
+    fn recognition_commands_reject_the_removed_prompt_option() {
+        let config = AppConfig::default();
+        let args = string_args(&["--prompt", "retired recognition hint"]);
+        assert!(TranscribeOptions::parse(&args, &config)
+            .unwrap_err()
+            .contains("--prompt"));
+        assert!(DictateOptions::parse(&args, &config)
+            .unwrap_err()
+            .contains("--prompt"));
+    }
+
+    #[test]
     fn process_options_parse_ai_translate_task() {
         let options = ProcessOptions::parse(&string_args(&[
             "--ai",
@@ -1126,7 +1127,7 @@ mod tests {
             "--locale",
             "zh-CN",
             "--model",
-            "gpt-test",
+            "test-text-model",
             "嗯",
             "今天讨论三个点",
         ]))
@@ -1135,7 +1136,7 @@ mod tests {
         assert!(options.ai);
         assert_eq!(options.task, ProcessTask::Translate);
         assert_eq!(options.target_language.as_deref(), Some("English"));
-        assert_eq!(options.model.as_deref(), Some("gpt-test"));
+        assert_eq!(options.model.as_deref(), Some("test-text-model"));
         assert_eq!(options.text, "嗯 今天讨论三个点");
     }
 
@@ -1187,7 +1188,7 @@ mod tests {
             "--file".to_string(),
             "sample.wav".to_string(),
             "--model".to_string(),
-            "qwen3-asr-flash".to_string(),
+            "test-asr-model".to_string(),
             "--raw".to_string(),
             "--show-changes".to_string(),
             "--locale".to_string(),
@@ -1209,12 +1210,41 @@ mod tests {
     }
 
     #[test]
+    fn transcribe_allows_explicit_generic_protocol_overrides() {
+        for (protocol, expected) in [
+            ("chat-audio", AsrProtocol::ChatAudio),
+            ("openai-transcriptions", AsrProtocol::OpenAiTranscriptions),
+        ] {
+            let options = TranscribeOptions::parse(
+                &string_args(&[
+                    "--file",
+                    "sample.wav",
+                    "--base-url",
+                    "https://compatible.example/v1",
+                    "--model",
+                    "test-audio-model",
+                    "--api-key-env",
+                    "TEST_API_KEY",
+                    "--protocol",
+                    protocol,
+                ]),
+                &AppConfig::default(),
+            )
+            .unwrap();
+
+            assert_eq!(options.asr.protocol, expected);
+            assert_eq!(options.asr.base_url, "https://compatible.example/v1");
+            assert_eq!(options.asr.model, "test-audio-model");
+        }
+    }
+
+    #[test]
     fn dictate_options_parse_output_flags() {
         let args = vec![
             "--seconds".to_string(),
             "2".to_string(),
             "--model".to_string(),
-            "qwen3-asr-flash".to_string(),
+            "test-asr-model".to_string(),
             "--show-changes".to_string(),
         ];
 
@@ -1230,7 +1260,7 @@ mod tests {
     fn listen_options_reuse_dictate_options() {
         let args = vec![
             "--model".to_string(),
-            "qwen3-asr-flash".to_string(),
+            "test-asr-model".to_string(),
             "--paste-delay-ms".to_string(),
             "250".to_string(),
         ];

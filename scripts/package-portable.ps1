@@ -15,11 +15,14 @@ $exampleConfigPath = Join-Path $portableDir "config.example.toml"
 if (-not $SkipBuild) {
   Push-Location $root
   try {
-    $cargoArgs = @("build", "-p", "orally-desktop", "--release")
+    $cargoArgs = @("build", "-p", "orally-desktop", "--release", "--locked", "--features", "tauri/custom-protocol")
     if ($Offline) {
       $cargoArgs += "--offline"
     }
     cargo @cargoArgs
+    if ($LASTEXITCODE -ne 0) {
+      throw "Release build failed with exit code $LASTEXITCODE. Portable package was not updated."
+    }
   } finally {
     Pop-Location
   }
@@ -34,15 +37,15 @@ Copy-Item -LiteralPath $sourceExe -Destination $targetExe -Force
 
 $configTemplate = @'
 [asr]
-base_url = "https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-model = "qwen3-asr-flash"
-protocol = "chat-audio"
+base_url = "https://api.openai.com/v1"
+model = "whisper-1"
+protocol = "auto"
 api_key_env = "ORALLY_OPENAI_COMPAT_API_KEY"
 
 [postprocess]
 mode = "llm"
-base_url = "https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-model = "deepseek-v4-flash-0731"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
 api_key_env = "ORALLY_OPENAI_COMPAT_API_KEY"
 system_prompt = "You are Orally's AI postprocessor for raw speech-to-text transcripts. Produce text that is ready to paste into the user's active app. Preserve the speaker's meaning, intent, language, names, product terms, URLs, and code identifiers. Remove filler words, repeated fragments, false starts, and self-corrections unless they change the meaning. Add only punctuation and lightweight structure that are clearly implied by the transcript. Do not invent facts, explanations, headings, labels, quotes, or markdown fences. Return only the final text."
 user_template = """

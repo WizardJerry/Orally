@@ -168,8 +168,8 @@ CLI 迁移必须保留以下进程契约：
 实现只负责在 ASR、处理和插入之间转发。`orally-speech` 是共享的生产接缝，但删除旧的
 演示 pipeline 仍是一个单独的清理决策。
 
-Desktop WebView 还会将演示用快捷键选择保存在 `localStorage` 中。这些选择不是运行时的
-`hotkey.preset`，也不属于完整的 Portable Installation 契约。
+Desktop 直接录入听写快捷键并保存到 `hotkey.preset`，保存时立即更新 Windows 注册。
+浏览器预览使用独立的本地配置进行界面验证。
 
 ## 5. 能力状态
 
@@ -205,7 +205,7 @@ Desktop WebView 还会将演示用快捷键选择保存在 `localStorage` 中。
 | History | Desktop 可以把原始文本和最终文本追加到 JSONL | Local History 拥有经过审阅的保留策略、需主动选择启用的 Raw Transcript、状态与恢复 |
 | 长录音 | 完整音频保存在内存中，随后才拆分 ASR 请求 | Audio Segment 被渐进写入，并经过有意的清理或保留 |
 | 完善 | CLI 语音命令使用原始文本或 `BuiltInTextProcessor`；仅 `process --ai` 显式使用 AI | 产品语言将 AI Post-processing 认定为首选；开发者向 CLI 是否及何时采用该策略，由单独审阅决定 |
-| Trigger | Desktop 启动时读取固定 preset；`listen` 硬编码一个快捷键 | Global Trigger 捕获、冲突验证和即时注册被延期 |
+| Trigger | Desktop 直接录入快捷键并即时注册；`listen` 硬编码一个快捷键 | CLI 快捷键统一仍被延期 |
 | 提供方配置 | 扁平 TOML section 和可选环境变量 | Service Connection 和 Default Service Slot 被延期 |
 
 [CONTEXT](../../CONTEXT.zh-CN.md)定义词汇，而不代表实现已经完成。已接受的 ADR 定义
@@ -249,7 +249,7 @@ Desktop WebView 还会将演示用快捷键选择保存在 `localStorage` 中。
     orally-desktop -----/                \-> orally-llm -> orally-core
                                         \-> orally-core
 
-`orally-speech` 负责类型化运行时 plan、ASR protocol 解析与自动推断、具体 ASR 适配器
+`orally-speech` 负责类型化运行时 plan、ASR protocol 解析与适配器选择、具体 ASR 适配器
 构造、Raw/Local/AI 完善选择、AI 到本地的 fallback、默认字典组装，以及结构化 outcome。
 
 它的运行时接口被有意保持狭窄：
@@ -367,7 +367,7 @@ framework。
 - **接口：** 生产调用方从类型化运行时 plan 构造 `SpeechProcessor`，并调用
   `process(AudioInput)`。
 - **由接缝隐藏的实现：**
-  - ASR protocol alias 与 `auto` 推断；
+  - ASR protocol alias 与 `auto` 的 HTTP 端点及音频格式协商；
   - 具体 multipart 或 chat-audio 适配器的构造；
   - direct-or-named-environment Provider Credential 解析；
   - Raw Transcript 保留；
@@ -543,3 +543,34 @@ personal dictionary、encrypted backup 和完整的 Local History 接口。
 - **验证：** 聚焦 storage 测试、workspace 测试、格式检查、严格 `orally-storage`
   Clippy，以及未变化的 CLI 冒烟行为全部通过。
 - **停止：** 独立报告 E1，再起草 Config I/O 测试或其他后端能力。
+
+## 16. Active 模型配置编辑器
+
+- **Status:** Active，用户于 2026-10-04 直接要求在 `develop` 实现。
+- **问题：** 主页配置卡片只会更换标题，新增模型与 Prompt 节点只是 DOM 演示，重新载入
+  或保存后不会保留。
+- **行为：** 合并主页与管线，顶部提供配置切换、保存、导入、导出、新建和重命名；
+  ASR 设置在上，后处理模型与 Prompt 节点在下。ASR 提供服务地址、模型和明文 API Key，
+  后处理保留 Prompt。ASR 自动协商 OpenAI 兼容转写或 Chat Audio，并隐藏选择项
+  （用户于 2026-10-08 调整）。
+  支持启用、删除和排序，切换时保留各配置草稿。托盘列出已保存配置，用圆点标示当前
+  配置，点击后立即切换。
+  设置页移除输出语言和配置路径控件，只保留直接录入的听写快捷键，配置统一保存在
+  程序同目录（用户于 2026-10-09 调整）。
+  2026-10-09 用户进一步移除配置及语音命令中的 ASR Prompt，将识别词汇留给后续词典
+  功能。旧 ASR Prompt 载入时忽略，再次保存时移除。配置帮助不再展示开发说明，词典
+  功能仍为 Deferred。
+- **持久化：** 在现有 TOML 中保存自包含配置，选中配置同步到顶层字段以兼容旧读取方。
+  输出、录音、隐私和快捷键保持为全局设置。
+  [ADR-0008](../adr/0008-edit-self-contained-model-profiles.zh-CN.md) 记录相对于
+  Deferred 共享 Workflow 设计的局部例外。
+- **执行：** 启用的 AI 模型依次处理；启用的 Prompt 子节点组合为所属模型的指令。
+  保留原始输出和现有本地失败回退行为。CLI 语音命令移除 ASR Prompt 输入，其他行为
+  及文本后处理的 Prompt 选项保持不变。Chat Audio Data URL 只保留可选语言上下文，
+  原始 Base64 Chat Audio 继续使用固定转写指令。
+- **测试界面：** 全局测试直接录音，使用当前配置及全局设置的全部未保存修改。
+  ASR 录音测试绕过后处理，文本测试仅运行后处理。无需上传文件；测试不保存配置、
+  插入输出或写入历史，取消和关闭会释放录音资源。
+- **验证：** 新旧 TOML 往返，包括忽略旧 ASR Prompt 并在再次保存时移除；草稿切换与
+  导入校验、节点排序、真实 loopback 顺序模型
+  请求、Rust workspace 测试、前端状态测试、格式检查、双语文档及浏览器交互和布局检查。

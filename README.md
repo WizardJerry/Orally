@@ -22,6 +22,35 @@ Read the
 [Refactor Architecture Baseline](docs/engineering/refactor-baseline.md) before
 implementation work and [Documentation Map](docs/README.md) for document roles.
 
+## Local Development (Windows)
+
+With Rust, Node.js/npm, the Windows Tauri build prerequisites, and `just`
+installed, run this from the repository root:
+
+```powershell
+just dev
+```
+
+This installs frontend development dependencies with `npm ci` when Tauri or Vite
+is missing, then starts the Desktop App through `tauri dev`. Tauri starts Vite at
+`http://localhost:1420`, reloads frontend edits, and rebuilds the app after Rust
+changes. Later starts reuse the installed dependencies. Run `just setup` after
+changing `package.json` or `package-lock.json` to refresh them. The first Rust
+build can take longer. Press `Ctrl+C` in the terminal to stop development.
+
+Run `just` or `just --list` to see the commands:
+
+| Command | Action |
+| --- | --- |
+| `just dev` | Prepare frontend dependencies if needed and start desktop development |
+| `just dev-ui` | Prepare frontend dependencies if needed and start only Vite |
+| `just setup` | Install or refresh locked frontend development dependencies |
+| `just build` | Build the release desktop app with embedded UI and prepare `dist/portable/Orally` |
+| `just build-debug` | Build all Rust workspace packages in debug mode |
+| `just test` | Run Rust workspace tests |
+| `just check` | Check Rust formatting and compilation |
+| `just fmt` | Format the Rust workspace |
+
 ## Current Prototype
 
 This repository currently contains:
@@ -54,7 +83,7 @@ cargo run -p orally-cli -- transcribe --file orally-recording.wav --raw
 cargo run -p orally-cli -- dictate --seconds 3 --show-changes
 cargo run -p orally-cli -- dictate --seconds 3 --insert --paste-delay-ms 1200
 cargo run -p orally-cli -- listen --paste-delay-ms 300
-cargo run -p orally-cli -- config init --provider aliyun-openai
+cargo run -p orally-cli -- config init --provider openai-compatible
 cargo run -p orally-cli -- config set output.paste_delay_ms 300
 cargo run -p orally-cli -- config show
 cargo run -p orally-desktop
@@ -78,53 +107,48 @@ Use `listen` on Windows to keep Orally running and trigger dictation with
 to stop recording, transcribe, post-process, and paste. Press `Ctrl+C` in the
 terminal to stop the listener.
 
-For ASR, configure an OpenAI-compatible transcription endpoint:
+For ASR, configure an OpenAI-compatible speech endpoint:
 
 ```powershell
 $env:ORALLY_ASR_API_KEY="..."
-$env:ORALLY_ASR_BASE_URL="https://openrouter.ai/api/v1"
-$env:ORALLY_ASR_MODEL="<model>"
-cargo run -p orally-cli -- transcribe --file orally-recording.wav
-```
-
-OpenRouter audio models use chat-completions audio input, so Orally auto-selects
-the `chat-audio` protocol when the base URL is `https://openrouter.ai/api/v1`.
-For Whisper-style multipart transcription APIs, use:
-
-```powershell
-$env:ORALLY_ASR_PROTOCOL="openai-transcriptions"
 $env:ORALLY_ASR_BASE_URL="https://api.openai.com/v1"
-```
-
-For Alibaba Cloud Model Studio through its OpenAI-compatible endpoint:
-
-```powershell
-$env:ORALLY_ASR_API_KEY=$env:ORALLY_OPENAI_COMPAT_API_KEY
-$env:ORALLY_ASR_BASE_URL="https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-$env:ORALLY_ASR_MODEL="qwen3-asr-flash"
-$env:ORALLY_ASR_PROTOCOL="chat-audio"
+$env:ORALLY_ASR_MODEL="whisper-1"
 cargo run -p orally-cli -- transcribe --file orally-recording.wav
 ```
 
-Some OpenAI-compatible chat audio models, including `qwen3-asr-flash`, expect
-`input_audio.data` as a WAV data URL. Orally selects that request shape from the
-model name and compatible endpoint.
+ASR defaults to `auto`: it first tries multipart `/audio/transcriptions`, then
+tries Chat Audio at `/chat/completions` if the transcription route returns
+HTTP 404 or 405. Chat Audio sends a WAV Data URL, with an existing language hint
+as optional system context. HTTP 400 or 422 triggers a second attempt with raw
+Base64, `format: "wav"`, and a fixed transcription instruction.
+Native multipart uploads are buffered in memory so an early HTTP rejection can
+still drive protocol selection. An unreadable error-response body preserves the
+received HTTP status.
+Authentication, rate limits, server errors, network failures, and invalid
+successful responses do not trigger protocol retries. Successful selection is
+reused for subsequent audio chunks. Orally does not guess from host or model
+names. The CLI can explicitly select `--protocol openai-transcriptions` or
+`--protocol chat-audio`. LLM post-processing uses text `/chat/completions`;
+sharing a service URL and API Key does not verify the speech model.
 
 ## Configuration
 
-Orally can load local configuration from `%APPDATA%\Orally\config.toml` on
-Windows. Set `ORALLY_CONFIG` to use a custom path.
+Orally reads and saves `config.toml` beside its executable. If that file is
+missing, it copies an existing legacy configuration from `ORALLY_CONFIG`,
+`%APPDATA%\Orally\config.toml`, or `$HOME/.config/orally/config.toml`, in that
+order. The original file is retained, and an existing executable-local file is
+never replaced by migration. An unreadable or invalid legacy file reports an
+error instead of silently resetting settings.
 
 Initialize a provider preset:
 
 ```powershell
-cargo run -p orally-cli -- config init --provider aliyun-openai
+cargo run -p orally-cli -- config init --provider openai-compatible
 ```
 
 Supported presets:
 
-- `aliyun-openai`
-- `openrouter`
+- `openai-compatible` (default; uses `ORALLY_OPENAI_COMPAT_API_KEY`)
 - `openai`
 
 Show the active config:
@@ -136,10 +160,10 @@ cargo run -p orally-cli -- config show
 Update one config value:
 
 ```powershell
-cargo run -p orally-cli -- config set asr.model qwen3-asr-flash
+cargo run -p orally-cli -- config set asr.model whisper-1
 cargo run -p orally-cli -- config set asr.api_key_env ORALLY_OPENAI_COMPAT_API_KEY
 cargo run -p orally-cli -- config set postprocess.mode llm
-cargo run -p orally-cli -- config set postprocess.model deepseek-v4-flash-0731
+cargo run -p orally-cli -- config set postprocess.model gpt-4o-mini
 cargo run -p orally-cli -- config set postprocess.fallback_to_builtin true
 cargo run -p orally-cli -- config set output.paste_delay_ms 300
 cargo run -p orally-cli -- config set output.restore_clipboard true
@@ -160,7 +184,6 @@ Common keys:
 - `asr.api_key`
 - `asr.api_key_env`
 - `asr.language`
-- `asr.prompt`
 - `postprocess.mode`
 - `postprocess.base_url`
 - `postprocess.model`
@@ -215,8 +238,10 @@ window again.
 At startup, the desktop app registers the Windows dictation hotkey selected by
 `hotkey.preset`. New configurations default to `Ctrl+Alt+Space`; an unreadable
 or invalid preset also falls back to that shortcut. Press once to start
-recording. A small always-on-top prompt appears near the bottom of the screen.
-Press the same hotkey again, or click `停止`, to stop recording, transcribe,
+recording. A compact, translucent dark overlay with rounded corners appears
+near the bottom of the screen. Its bottom bars react to microphone volume and
+return to small dots during silence. Press the same hotkey again, or click the
+stop icon, to stop recording, transcribe,
 post-process, and paste the final text back into the window that was active when
 recording started.
 
@@ -227,39 +252,89 @@ remain in the config schema for compatibility but are ignored by the desktop
 runtime.
 
 The tray menu can also start or stop dictation, pause or resume the hotkey, open
-settings, and quit Orally.
+settings, and quit Orally. Its configuration submenu lists every saved profile,
+with a dot before the active one. Selecting a profile activates it immediately
+and updates the settings window while retaining unsaved drafts. Saving profiles,
+including new names, refreshes this menu.
 
-The current prototype still exposes a fixed hotkey preset list and reads changes
-only at startup. Direct shortcut capture, immediate conflict validation, and
-registration without restarting are deferred product improvements, not part of
-the completed shared-speech milestone.
+Click the dictation shortcut in Settings, then press the desired combination.
+Escape cancels capture. Saving registers the new shortcut immediately; a
+registration conflict or failed save preserves the previous binding. The old
+binding is temporarily released during capture and restored when capture ends.
+Settings only exposes the dictation shortcut; `Ctrl+S` remains the fixed save
+action inside the settings window.
 
 The settings UI can edit:
 
-- API provider preset, base URL, model, protocol, API key, API key environment
-  variable, language hint, and ASR prompt.
-- AI post-processing mode, OpenAI-compatible LLM endpoint/model/API key, system
-  prompt, and user template.
-- Global shortcut, paste delay, output locale, Raw Transcript mode, and
+- OpenAI-compatible speech service URL, model, and API key.
+- AI post-processing mode and ordered OpenAI-compatible model and Prompt nodes.
+- Global shortcut, paste delay, Raw Transcript mode, and
   clipboard restoration.
 - The shared `output.insert` and `output.show_changes` settings used by CLI
   voice commands. Desktop currently always inserts Final Text and does not show
   the processing-change list.
 - External-request privacy switch and local history.
 
-Saving writes the same local config used by the CLI, usually
-`%APPDATA%\Orally\config.toml` on Windows. Leave the API Key field blank to use
-only an environment variable reference.
+Saving writes `config.toml` beside the executable. Desktop and CLI share the
+file when installed in the same directory. Settings omits output language and
+configuration-path controls; the existing locale value is retained. Leave the
+API Key field blank to use only an environment variable reference.
 
 ## Desktop AI Post-Processing
+
+The model editor combines profile selection and pipeline editing. Use the top
+bar to switch, create, import, export, or save profiles, and rename the current
+profile below it. Switching retains unsaved drafts; saving writes the collection
+and activates the selected configuration. Speech recognition appears above
+post-processing. Speech recognition uses service URL, model, and API Key;
+post-processing also provides Prompt. Desktop ASR, connection tests, and
+recording tests share automatic transcription/Chat Audio negotiation. Older
+profiles are normalized to `auto`, preserving service fields. There is no
+recognition-protocol selector.
+Speech recognition has no configurable Prompt. Older ASR Prompt values are
+ignored on load and omitted when saved again. A future dictionary feature is
+planned for recognition vocabulary; it is not implemented yet.
+API keys are masked by default, with an eye button to show or hide them, and
+are saved as plaintext. Output, privacy, and
+shortcut settings remain global in the Settings page.
+
+Each post-processing model has its own service, credentials, Prompt, and
+ordered Prompt children. Add, remove, enable, or reorder models and Prompts.
+In AI mode, enabled models run sequentially, with each receiving the previous
+model's output. Prompt children append to their model's system instructions.
+Local mode ignores AI nodes; disabling all AI models passes through the raw
+transcript. Existing single-model TOML continues to load; hidden language,
+environment-variable, template, and fallback settings retain their saved values.
+
+Each speech or LLM service offers a connection test using its current fields.
+The top-bar Test button defaults to a microphone Voice Input test: start
+recording, speak, then stop to run recognition and the configured post-processing
+chain. It captures the selected profile and global settings, including unsaved
+edits, when recording starts. The speech card's recording test runs ASR alone;
+text-only post-processing is also available in the dialog. No audio upload is
+needed. Results show the recognized text and final output without saving
+configuration, inserting text, or writing history. Closing or cancelling releases
+the microphone; a test recording is limited to two minutes and 15 MiB.
+Connection tests report actual service failures; input tests show a warning if
+the configured local fallback is used. External-request blocking also applies
+to tests. Browser preview asks for microphone access and makes direct service
+requests, requiring a service that permits CORS. The native app uses its existing
+microphone recorder and is not subject to browser CORS restrictions.
+
+Export saves one JSON profile, including directly configured API keys. Import
+accepts JSON profiles or configuration documents, and the Desktop App also
+accepts existing TOML. An import becomes a new draft before saving. Browser
+preview persists separately in local storage and requires the native app for
+TOML parsing. The CLI retains its single-model flow. See the
+[editor storage decision](docs/adr/0008-edit-self-contained-model-profiles.md).
 
 By default Orally uses the built-in local cleaner. Set:
 
 ```toml
 [postprocess]
 mode = "llm"
-base_url = "https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-model = "deepseek-v4-flash-0731"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
 api_key_env = "ORALLY_OPENAI_COMPAT_API_KEY"
 ```
 
@@ -299,10 +374,10 @@ formats are not restored yet.
 
 ## Executable-local Windows Prototype
 
-Orally currently supports executable-local configuration without registering as
-a Windows input method. Configuration path precedence is an explicit
-`ORALLY_CONFIG` path first, then an existing `config.toml` beside `Orally.exe`,
-then `%APPDATA%\Orally\config.toml`.
+Orally uses executable-local configuration without registering as a Windows
+input method. `config.toml` always lives beside the executable, including on
+first save. Legacy locations are migration sources only, and directory write
+errors are reported without redirecting configuration elsewhere.
 
 This is a config-local prototype, not the complete Portable Installation
 contract defined by the deferred product design.
@@ -310,8 +385,11 @@ contract defined by the deferred product design.
 Build a portable folder:
 
 ```powershell
-.\scripts\package-portable.ps1
+just build
 ```
+
+This compiles an optimized release executable with the UI embedded, so it does
+not need the Vite development server. A failed build stops packaging.
 
 The script writes:
 
@@ -325,7 +403,7 @@ Run `Orally.exe` from that folder to keep settings local to the portable
 directory. You can also create the same executable-directory config from the CLI:
 
 ```powershell
-cargo run -p orally-cli -- config init --provider aliyun-openai --portable
+cargo run -p orally-cli -- config init --provider openai-compatible --portable
 ```
 
 The packaging script does not overwrite an existing `config.toml`; it always

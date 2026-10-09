@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Orally</title>
+    <title>Orally · 模型配置</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -11,260 +11,124 @@
       <aside class="rail">
         <img class="brand-mark" src="./assets/orally-icon.svg" alt="Orally" />
         <nav class="nav-list" aria-label="主导航">
-          <button class="nav-item active" data-page="home" type="button">
-            <span class="nav-icon" aria-hidden="true">H</span>
-            <span>主页</span>
+          <button class="nav-item active" data-page="home" type="button" aria-label="模型配置">
+            <span class="nav-icon" aria-hidden="true">AI</span>
+            <span>配置</span>
           </button>
-          <button class="nav-item" data-page="pipeline" type="button">
-            <span class="nav-icon" aria-hidden="true">P</span>
-            <span>管线</span>
-          </button>
-          <button class="nav-item" data-page="settings" type="button">
-            <span class="nav-icon" aria-hidden="true">S</span>
+          <button class="nav-item" data-page="settings" type="button" aria-label="应用设置">
+            <span class="nav-icon" aria-hidden="true">⚙</span>
             <span>设置</span>
           </button>
         </nav>
+        <span class="rail-caption">Orally</span>
       </aside>
 
       <section class="workspace">
-        <header class="topbar">
-          <div class="title-block">
-            <span class="eyebrow">Orally</span>
-            <h1 id="page-title">配置文档</h1>
-            <p id="config-path">读取配置中...</p>
-          </div>
+        <header class="topbar configuration-toolbar">
+          <h1 id="page-title">模型配置</h1>
+          <label class="config-picker">
+            <span>当前配置</span>
+            <select id="config-select" aria-label="切换配置"></select>
+          </label>
           <div class="top-actions">
-            <button id="reload" class="icon-button" type="button" title="重新载入" aria-label="重新载入">
-              R
-            </button>
+            <button id="new-config" class="ghost" type="button">新建</button>
+            <button id="import-config" class="ghost" type="button">导入</button>
+            <button id="export-config" class="ghost" type="button" title="导出当前配置为 JSON，包含已填写的 API Key">导出</button>
+            <button id="reload" class="icon-button" type="button" title="重新载入已保存配置" aria-label="重新载入已保存配置">↻</button>
+            <button id="test-config" class="tonal" type="button">测试</button>
             <button id="save" class="filled" type="button">保存配置</button>
+            <input id="config-import-file" type="file" accept=".json,.toml,application/json" hidden />
           </div>
         </header>
 
-        <section id="home-page" class="page active" data-title="配置文档">
-          <div class="home-layout">
-            <section class="document-stage" aria-labelledby="documents-title">
-              <div class="section-heading">
-                <span class="eyebrow">Profiles</span>
-                <h2 id="documents-title">选择配置文档</h2>
-              </div>
+        <section id="home-page" class="page active" data-title="模型配置">
+          <div class="config-detail-bar">
+            <label class="config-name-label">
+              <span>配置名称</span>
+              <input id="config-name" placeholder="为这套配置命名" maxlength="80" autocomplete="off" />
+            </label>
+            <span id="config-state" class="config-state" role="status" aria-live="polite">已保存</span>
+          </div>
 
-              <div class="carousel-toolbar">
-                <button id="prev-doc" class="icon-button" type="button" title="上一项" aria-label="上一项">
-                  &lt;
-                </button>
-                <div class="carousel-meter" aria-hidden="true">
-                  <span id="carousel-progress"></span>
+          <div class="configuration-stack">
+            <section class="configuration-panel recognition-panel" aria-labelledby="recognition-title">
+              <header class="panel-heading">
+                <span class="stage-symbol recognition-symbol" aria-hidden="true">ASR</span>
+                <div>
+                  <h2 id="recognition-title">语音识别</h2>
                 </div>
-                <button id="next-doc" class="icon-button" type="button" title="下一项" aria-label="下一项">
-                  &gt;
-                </button>
+              </header>
+              <div class="service-fields recognition-fields">
+                <label class="service-field service-url">
+                  服务地址
+                  <input id="asr-base-url" placeholder="https://api.example.com/v1" spellcheck="false" />
+                </label>
+                <label class="service-field service-model">
+                  模型
+                  <input id="asr-model" placeholder="模型名称" spellcheck="false" />
+                </label>
+                <div class="service-field service-key">
+                  <label for="asr-api-key">API Key</label>
+                  <span class="api-key-control">
+                    <input id="asr-api-key" type="password" placeholder="API Key" autocomplete="off" spellcheck="false" />
+                    <button id="toggle-asr-api-key" class="key-visibility-button" type="button" aria-label="显示 API Key" aria-pressed="false"></button>
+                  </span>
+                </div>
               </div>
-
-              <div class="document-carousel" aria-label="配置文档列表"></div>
+              <div class="service-actions recognition-test-actions">
+                <p id="asr-test-result" class="service-test-result" role="status" aria-live="polite"></p>
+                <button id="test-asr-recording" class="tonal test-service-button" type="button">录音测试</button>
+                <button id="test-asr-connection" class="ghost test-service-button" type="button">测试连接</button>
+              </div>
             </section>
 
-            <aside class="activity-panel">
-              <div class="section-heading compact">
-                <span class="eyebrow">Workspace</span>
-                <h2>工作区</h2>
-              </div>
-              <div class="quick-actions">
-                <button class="tonal" type="button">新建配置</button>
-                <button class="ghost" type="button">导入配置</button>
-              </div>
-              <div class="recent-list" aria-label="最近使用">
-                <div class="recent-row">
-                  <span>会议转写.toml</span>
-                  <code>2 min ago</code>
+            <section class="configuration-panel postprocess-panel" aria-labelledby="postprocess-title">
+              <header class="panel-heading">
+                <span class="stage-symbol refinement-symbol" aria-hidden="true">AI</span>
+                <div>
+                  <h2 id="postprocess-title">后处理</h2>
                 </div>
-                <div class="recent-row">
-                  <span>访谈整理.toml</span>
-                  <code>Today</code>
-                </div>
-                <div class="recent-row">
-                  <span>字幕生成.toml</span>
-                  <code>Yesterday</code>
-                </div>
+              </header>
+              <div class="postprocess-mode-row">
+                <label>
+                  处理方式
+                  <select id="postprocess-mode">
+                    <option value="builtin">本地基础清理</option>
+                    <option value="llm">AI 模型处理</option>
+                  </select>
+                </label>
               </div>
-            </aside>
+              <div id="postprocess-nodes" class="postprocess-nodes" aria-label="后处理模型节点"></div>
+              <button id="add-model" class="tonal add-model-button" type="button">＋ 添加模型节点</button>
+            </section>
           </div>
         </section>
 
-        <section id="pipeline-page" class="page" data-title="管线">
-          <div class="pipeline-shell">
-            <section class="pipeline-main" aria-labelledby="pipeline-title">
-              <div class="pipeline-header">
+        <section id="settings-page" class="page" data-title="应用设置">
+          <div class="settings-layout">
+            <section class="shortcuts-panel" aria-labelledby="shortcuts-title">
+              <div class="settings-header">
                 <div>
-                  <span class="eyebrow">Pipeline</span>
-                  <h2 id="pipeline-title">会议转写.toml</h2>
-                  <p>AI 模型节点下管理 Prompt 子节点</p>
+                  <h2 id="shortcuts-title">快捷键</h2>
                 </div>
-                <div class="node-actions">
-                  <button id="add-model" class="filled" type="button">添加 AI 模型</button>
+                <div class="settings-actions">
+                  <button id="restore-shortcuts" class="ghost" type="button">恢复默认</button>
                 </div>
               </div>
 
-              <div id="pipeline-list" class="pipeline-list">
-                <article class="model-node expanded selected" data-node-id="asr">
-                  <button class="node-row model-row" type="button" data-expand="asr">
-                    <span class="chevron" aria-hidden="true">v</span>
-                    <span class="node-symbol model-symbol">AI</span>
-                    <span class="node-copy">
-                      <strong>语音识别模型</strong>
-                      <small><span id="asr-provider-label">OpenAI-compatible</span> · <span id="asr-model-label">未设置模型</span></small>
-                    </span>
-                    <span class="chip">ASR</span>
-                    <span class="meta">temp auto</span>
-                    <span class="node-menu" aria-hidden="true">...</span>
-                  </button>
-                  <div class="prompt-children">
-                    <div class="prompt-row selected" data-node-id="asr-prompt">
-                      <span class="child-rail" aria-hidden="true"></span>
-                      <span class="node-symbol prompt-symbol">PR</span>
-                      <span class="node-copy">
-                        <strong>ASR Prompt</strong>
-                        <small>语言提示 · <span id="asr-language-label">zh-CN</span></small>
-                      </span>
-                      <span class="chip subtle">Prompt</span>
-                      <button class="icon-button mini" type="button" title="编辑" aria-label="编辑">E</button>
-                    </div>
-                    <button class="add-prompt" data-parent="asr" type="button">+ 添加 Prompt</button>
+              <div class="shortcut-group">
+                <div class="shortcut-row">
+                  <div>
+                    <strong>开始/停止听写</strong>
                   </div>
-                </article>
-
-                <article class="model-node expanded" data-node-id="postprocess">
-                  <button class="node-row model-row" type="button" data-expand="postprocess">
-                    <span class="chevron" aria-hidden="true">v</span>
-                    <span class="node-symbol model-symbol">AI</span>
-                    <span class="node-copy">
-                      <strong>文本后处理模型</strong>
-                      <small><span id="postprocess-mode-label">builtin</span> · <span id="postprocess-model-label">本地基础清理</span></small>
-                    </span>
-                    <span class="chip">LLM</span>
-                    <span class="meta">structured</span>
-                    <span class="node-menu" aria-hidden="true">...</span>
-                  </button>
-                  <div class="prompt-children">
-                    <div class="prompt-row" data-node-id="system-prompt">
-                      <span class="child-rail" aria-hidden="true"></span>
-                      <span class="node-symbol prompt-symbol">PR</span>
-                      <span class="node-copy">
-                        <strong>System Prompt</strong>
-                        <small>角色与约束 · <span id="system-token-label">0 tokens</span></small>
-                      </span>
-                      <span class="chip subtle">Prompt</span>
-                      <button class="icon-button mini" type="button" title="编辑" aria-label="编辑">E</button>
-                    </div>
-                    <div class="prompt-row" data-node-id="user-template">
-                      <span class="child-rail" aria-hidden="true"></span>
-                      <span class="node-symbol prompt-symbol">PR</span>
-                      <span class="node-copy">
-                        <strong>User Template</strong>
-                        <small>转写变量模板 · <span id="template-token-label">0 tokens</span></small>
-                      </span>
-                      <span class="chip subtle">Prompt</span>
-                      <button class="icon-button mini" type="button" title="编辑" aria-label="编辑">E</button>
-                    </div>
-                    <button class="add-prompt" data-parent="postprocess" type="button">+ 添加 Prompt</button>
-                  </div>
-                </article>
+                  <button id="hotkey-capture" class="key-capture" type="button" aria-label="录入开始或停止听写的快捷键，当前组合：Ctrl + Alt + Space" aria-describedby="hotkey-capture-state" aria-pressed="false">Ctrl + Alt + Space</button>
+                </div>
+                <p id="hotkey-capture-state" class="hotkey-capture-state" role="status" aria-live="polite"></p>
               </div>
             </section>
-
-            <aside class="inspector" aria-label="节点属性">
-              <div class="section-heading compact">
-                <span class="eyebrow">Inspector</span>
-                <h2>节点属性</h2>
-              </div>
-
-              <label>
-                服务商预设
-                <select id="provider-preset">
-                  <option value="custom">自定义</option>
-                  <option value="aliyun-openai">阿里云百炼（OpenAI兼容）</option>
-                  <option value="openrouter">OpenRouter</option>
-                  <option value="openai">OpenAI-compatible</option>
-                </select>
-              </label>
-              <label>
-                ASR Base URL
-                <input id="asr-base-url" spellcheck="false" />
-              </label>
-              <label>
-                ASR 模型
-                <input id="asr-model" spellcheck="false" />
-              </label>
-              <label>
-                协议
-                <select id="asr-protocol">
-                  <option value="auto">auto</option>
-                  <option value="chat-audio">chat-audio</option>
-                  <option value="openai-transcriptions">openai-transcriptions</option>
-                </select>
-              </label>
-              <label>
-                API Key 环境变量
-                <input id="asr-api-key-env" spellcheck="false" />
-              </label>
-              <label>
-                API Key
-                <input id="asr-api-key" type="password" autocomplete="off" spellcheck="false" />
-              </label>
-              <label>
-                语言
-                <input id="asr-language" placeholder="zh / en / 留空" spellcheck="false" />
-              </label>
-              <label class="textarea-field">
-                ASR Prompt
-                <textarea id="asr-prompt" rows="4"></textarea>
-              </label>
-
-              <div class="inspector-divider"></div>
-
-              <label>
-                后处理模式
-                <select id="postprocess-mode">
-                  <option value="builtin">本地基础清理</option>
-                  <option value="llm">AI 后处理</option>
-                </select>
-              </label>
-              <label>
-                LLM Base URL
-                <input id="postprocess-base-url" spellcheck="false" />
-              </label>
-              <label>
-                LLM 模型
-                <input id="postprocess-model" spellcheck="false" />
-              </label>
-              <label>
-                LLM API Key 环境变量
-                <input id="postprocess-api-key-env" spellcheck="false" />
-              </label>
-              <label>
-                LLM API Key
-                <input id="postprocess-api-key" type="password" autocomplete="off" spellcheck="false" />
-              </label>
-              <label class="switch-row">
-                <span>AI 失败时回退到本地清理</span>
-                <input id="postprocess-fallback-to-builtin" type="checkbox" />
-              </label>
-              <label class="textarea-field">
-                System Prompt
-                <textarea id="postprocess-system-prompt" rows="5"></textarea>
-              </label>
-              <label class="textarea-field">
-                User Template
-                <textarea id="postprocess-user-template" rows="5"></textarea>
-              </label>
-
-              <details class="advanced-config">
-                <summary>运行参数</summary>
+              <details class="advanced-config runtime-panel" open>
+                <summary>输出与隐私</summary>
                 <div class="field-grid compact-grid">
-                  <label>
-                    输出语言
-                    <input id="output-locale" spellcheck="false" />
-                  </label>
                   <label>
                     粘贴延迟 ms
                     <input id="output-paste-delay-ms" type="number" min="0" max="5000" />
@@ -302,110 +166,59 @@
                   历史路径
                   <input id="privacy-history-path" placeholder="留空则使用默认 history.jsonl" spellcheck="false" />
                 </label>
-                <div class="path-list">
-                  <span>配置文件</span>
-                  <code id="config-path-detail">读取中...</code>
-                  <span>Portable 配置</span>
-                  <code id="portable-config-path">读取中...</code>
-                </div>
-                <button id="enable-portable" class="tonal inline-action" type="button">
-                  使用程序同目录 config.toml
-                </button>
               </details>
-            </aside>
           </div>
         </section>
 
-        <section id="settings-page" class="page" data-title="快捷键">
-          <div class="settings-layout">
-            <section class="shortcuts-panel" aria-labelledby="shortcuts-title">
-              <div class="settings-header">
-                <div>
-                  <span class="eyebrow">Shortcuts</span>
-                  <h2 id="shortcuts-title">快捷键配置</h2>
-                </div>
-                <div class="settings-actions">
-                  <input id="shortcut-search" class="search-input" placeholder="搜索快捷键" spellcheck="false" />
-                  <button id="restore-shortcuts" class="ghost" type="button">恢复默认</button>
-                  <button id="export-shortcuts" class="tonal" type="button">导出</button>
-                  <button id="import-shortcuts" class="ghost" type="button">导入</button>
-                  <input id="shortcut-import-file" type="file" accept="application/json" hidden />
-                </div>
-              </div>
-
-              <div class="shortcut-group" data-group="recording">
-                <h3>录音控制</h3>
-                <div class="shortcut-row" data-shortcut-name="开始 停止 听写 全局">
-                  <div>
-                    <strong>开始/停止听写</strong>
-                    <small>全局热键，保存后重启生效</small>
-                  </div>
-                  <select id="hotkey-preset" class="key-select">
-                    <option value="ctrl-alt-space">Ctrl + Alt + Space</option>
-                    <option value="ctrl-shift-space">Ctrl + Shift + Space</option>
-                    <option value="alt-space">Alt + Space</option>
-                    <option value="f9">F9</option>
-                    <option value="f10">F10</option>
-                    <option value="f11">F11</option>
-                    <option value="f12">F12</option>
-                    <option value="ctrl-alt-f9">Ctrl + Alt + F9</option>
-                    <option value="ctrl-alt-f10">Ctrl + Alt + F10</option>
-                    <option value="ctrl-alt-f11">Ctrl + Alt + F11</option>
-                    <option value="ctrl-alt-f12">Ctrl + Alt + F12</option>
-                  </select>
-                </div>
-                <div class="shortcut-row" data-shortcut-name="暂停 恢复 热键">
-                  <div>
-                    <strong>暂停/恢复热键</strong>
-                    <small>托盘与窗口内控制</small>
-                  </div>
-                  <button class="key-capture" data-shortcut="pause" type="button">Ctrl + Shift + P</button>
-                </div>
-              </div>
-
-              <div class="shortcut-group" data-group="pipeline">
-                <h3>管线编辑</h3>
-                <div class="shortcut-row" data-shortcut-name="添加 AI 模型 节点">
-                  <div>
-                    <strong>添加 AI 模型节点</strong>
-                    <small>在当前配置文档中新增模型节点</small>
-                  </div>
-                  <button class="key-capture" data-shortcut="addModel" type="button">Ctrl + M</button>
-                </div>
-                <div class="shortcut-row warning" data-shortcut-name="添加 Prompt 子节点 冲突">
-                  <div>
-                    <strong>添加 Prompt 子节点</strong>
-                    <small>添加到选中的 AI 模型下</small>
-                  </div>
-                  <span class="chip warning-chip">冲突</span>
-                  <button class="key-capture" data-shortcut="addPrompt" type="button">Ctrl + Enter</button>
-                </div>
-              </div>
-
-              <div class="shortcut-group" data-group="window">
-                <h3>窗口操作</h3>
-                <div class="shortcut-row" data-shortcut-name="显示 隐藏 主窗口">
-                  <div>
-                    <strong>显示/隐藏主窗口</strong>
-                    <small>桌面窗口快速切换</small>
-                  </div>
-                  <button class="key-capture" data-shortcut="toggleWindow" type="button">Alt + Space</button>
-                </div>
-                <div class="shortcut-row" data-shortcut-name="保存 配置">
-                  <div>
-                    <strong>保存当前配置</strong>
-                    <small>保存配置文档和快捷键</small>
-                  </div>
-                  <button class="key-capture" data-shortcut="save" type="button">Ctrl + S</button>
-                </div>
-              </div>
-            </section>
-          </div>
-        </section>
-
-        <p id="status" class="status">准备就绪</p>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
       </section>
     </main>
+    <dialog id="config-test-dialog" class="config-test-dialog" aria-labelledby="config-test-title">
+      <header class="test-dialog-heading">
+        <div>
+          <h2 id="config-test-title">语音输入测试</h2>
+        </div>
+        <button id="config-test-close" class="icon-button" type="button" aria-label="关闭测试">×</button>
+      </header>
+      <div class="test-dialog-body">
+        <label class="test-mode-field">
+          <span>测试方式</span>
+          <select id="config-test-mode">
+            <option value="voice">语音输入 · 完整流程</option>
+            <option value="asr">录音 · 仅语音识别</option>
+            <option value="text">文本 · 后处理</option>
+          </select>
+        </label>
+        <label id="config-test-text-field" class="textarea-field" hidden>
+          输入文本
+          <textarea id="config-test-text" rows="3" placeholder="输入要测试的转写文本…">嗯，今天我们讨论了新版本的安排，然后然后决定先完成配置页面，再检查语音输入的效果。</textarea>
+        </label>
+        <div id="config-test-recording-field" class="test-recording-panel">
+          <span class="test-recording-symbol" aria-hidden="true">●</span>
+          <div class="test-recording-copy">
+            <strong id="config-test-recording-status">准备录音</strong>
+          </div>
+          <output id="config-test-timer" class="test-recording-timer" role="timer" aria-label="录音时长" aria-live="off">00:00</output>
+        </div>
+        <div class="test-run-row">
+          <p id="config-test-status" role="status" aria-live="polite"></p>
+          <div class="test-run-actions">
+            <button id="cancel-config-test" class="ghost" type="button" hidden>取消测试</button>
+            <button id="run-config-test" class="filled" type="button">开始录音</button>
+          </div>
+        </div>
+        <div id="config-test-results" class="config-test-results" hidden>
+          <label id="config-test-raw-field" class="textarea-field" hidden>
+            <span id="config-test-raw-label">识别文本</span>
+            <textarea id="config-test-raw" rows="3" readonly></textarea>
+          </label>
+          <label id="config-test-final-field" class="textarea-field">
+            <span id="config-test-final-label">最终输出</span>
+            <textarea id="config-test-final" rows="6" readonly></textarea>
+          </label>
+        </div>
+      </div>
+    </dialog>
     <script src="./app.js" type="module"></script>
   </body>
 </html>

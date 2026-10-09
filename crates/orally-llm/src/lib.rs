@@ -174,16 +174,29 @@ fn validate_config(config: &OpenAiChatPostprocessorConfig) -> Result<(), OrallyE
         ));
     }
 
+    if !matches!(reqwest::Url::parse(config.base_url.trim()), Ok(url) if matches!(url.scheme(), "http" | "https"))
+    {
+        return Err(OrallyError::InvalidInput(
+            "postprocess base URL must be a valid HTTP or HTTPS URL".to_string(),
+        ));
+    }
+
     Ok(())
 }
 
 fn chat_completions_endpoint(base_url: &str) -> String {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    if trimmed.ends_with("/chat/completions") {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}/chat/completions")
-    }
+    let trimmed = base_url.trim();
+    let Ok(mut url) = reqwest::Url::parse(trimmed) else {
+        return trimmed.to_string();
+    };
+    let path = url.path().trim_end_matches('/');
+    let base_path = path
+        .strip_suffix("/audio/transcriptions")
+        .or_else(|| path.strip_suffix("/chat/completions"))
+        .unwrap_or(path);
+    url.set_path(&format!("{base_path}/chat/completions"));
+    url.set_fragment(None);
+    url.to_string()
 }
 
 fn sanitize_model_text(text: &str) -> String {
@@ -267,6 +280,41 @@ mod tests {
             config.endpoint(),
             "https://api.example.com/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn chat_endpoint_accepts_complete_api_routes_and_preserves_gateway_query() {
+        for base_url in [
+            "  https://api.example.com/gateway/v1/audio/transcriptions/?tenant=a%2Fb#ignored  ",
+            "https://api.example.com/gateway/v1/chat/completions/?tenant=a%2Fb#ignored",
+            " https://api.example.com/gateway/v1///?tenant=a%2Fb#ignored ",
+        ] {
+            let config = OpenAiChatPostprocessorConfig::new(base_url, "key", "model");
+            assert_eq!(
+                config.endpoint(),
+                "https://api.example.com/gateway/v1/chat/completions?tenant=a%2Fb"
+            );
+        }
+    }
+
+    #[test]
+    fn postprocess_rejects_invalid_service_urls_during_construction() {
+        for base_url in [
+            "not a URL?secret=fixture-secret",
+            "ftp://api.example.com/v1",
+            "https://",
+        ] {
+            let error = OpenAiChatPostprocessor::new(OpenAiChatPostprocessorConfig::new(
+                base_url,
+                "fixture-key",
+                "model",
+            ))
+            .unwrap_err();
+            assert!(matches!(&error, OrallyError::InvalidInput(_)));
+            assert!(error.to_string().contains("valid HTTP or HTTPS URL"));
+            assert!(!error.to_string().contains("fixture-secret"));
+            assert!(!error.to_string().contains("fixture-key"));
+        }
     }
 
     #[test]

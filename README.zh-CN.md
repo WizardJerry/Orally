@@ -12,6 +12,29 @@ Orally 是一个可实际工作的 AI 辅助语音输入早期原型，也是一
 
 开始实现工作前，请阅读[重构架构基线](docs/engineering/refactor-baseline.zh-CN.md)；有关各文档的职责，请参阅[文档导航](docs/README.zh-CN.md)。
 
+## 本地开发（Windows）
+
+安装 Rust、Node.js/npm、Windows Tauri 构建所需工具和 `just` 后，在仓库根目录运行：
+
+```powershell
+just dev
+```
+
+此命令在缺少 Tauri 或 Vite 时通过 `npm ci` 安装前端开发依赖，然后通过 `tauri dev` 启动 Desktop App。Tauri 会在 `http://localhost:1420` 启动 Vite，前端修改支持热更新，Rust 修改会触发应用重新编译。后续启动复用已安装的依赖；修改 `package.json` 或 `package-lock.json` 后，运行 `just setup` 刷新依赖。首次 Rust 编译可能较慢。在终端按 `Ctrl+C` 可停止开发进程。
+
+运行 `just` 或 `just --list` 查看命令：
+
+| 命令 | 用途 |
+| --- | --- |
+| `just dev` | 按需准备前端依赖，启动桌面开发模式 |
+| `just dev-ui` | 按需准备前端依赖，仅启动 Vite |
+| `just setup` | 安装或刷新锁定的前端开发依赖 |
+| `just build` | 构建内嵌界面的 Release 桌面应用，生成 `dist/portable/Orally` |
+| `just build-debug` | 构建全部 Rust workspace 包的 Debug 版本 |
+| `just test` | 运行 Rust workspace 测试 |
+| `just check` | 检查 Rust 格式和编译 |
+| `just fmt` | 格式化 Rust workspace |
+
 ## 当前原型
 
 此仓库目前包含：
@@ -37,7 +60,7 @@ cargo run -p orally-cli -- transcribe --file orally-recording.wav --raw
 cargo run -p orally-cli -- dictate --seconds 3 --show-changes
 cargo run -p orally-cli -- dictate --seconds 3 --insert --paste-delay-ms 1200
 cargo run -p orally-cli -- listen --paste-delay-ms 300
-cargo run -p orally-cli -- config init --provider aliyun-openai
+cargo run -p orally-cli -- config init --provider openai-compatible
 cargo run -p orally-cli -- config set output.paste_delay_ms 300
 cargo run -p orally-cli -- config show
 cargo run -p orally-desktop
@@ -51,48 +74,42 @@ cargo run -p orally-desktop
 
 在 Windows 上使用 `listen` 可让 Orally 持续运行，并通过 `Ctrl+Alt+Space` 触发听写。按一次开始录音，再按一次相同热键即可停止录音、转写、后处理并粘贴。在终端中按 `Ctrl+C` 可停止监听器。
 
-对于 ASR，请配置兼容 OpenAI 的转写端点：
+对于 ASR，请配置兼容 OpenAI 的语音服务端点：
 
 ```powershell
 $env:ORALLY_ASR_API_KEY="..."
-$env:ORALLY_ASR_BASE_URL="https://openrouter.ai/api/v1"
-$env:ORALLY_ASR_MODEL="<model>"
-cargo run -p orally-cli -- transcribe --file orally-recording.wav
-```
-
-OpenRouter 音频模型使用 chat-completions 音频输入，因此当 base URL 为 `https://openrouter.ai/api/v1` 时，Orally 会自动选择 `chat-audio` 协议。对于 Whisper 风格的 multipart 转写 API，请使用：
-
-```powershell
-$env:ORALLY_ASR_PROTOCOL="openai-transcriptions"
 $env:ORALLY_ASR_BASE_URL="https://api.openai.com/v1"
-```
-
-若要通过兼容 OpenAI 的端点使用阿里云百炼（Model Studio）：
-
-```powershell
-$env:ORALLY_ASR_API_KEY=$env:ORALLY_OPENAI_COMPAT_API_KEY
-$env:ORALLY_ASR_BASE_URL="https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-$env:ORALLY_ASR_MODEL="qwen3-asr-flash"
-$env:ORALLY_ASR_PROTOCOL="chat-audio"
+$env:ORALLY_ASR_MODEL="whisper-1"
 cargo run -p orally-cli -- transcribe --file orally-recording.wav
 ```
 
-包括 `qwen3-asr-flash` 在内的一些兼容 OpenAI 的 chat 音频模型要求 `input_audio.data` 使用 WAV data URL。Orally 会根据模型名称和兼容端点选择这种请求结构。
+ASR 默认使用 `auto`：先尝试 multipart `/audio/transcriptions`，收到 HTTP 404 或 405
+后尝试 `/chat/completions` 的 Chat Audio。音频以 WAV Data URL 传入，已有语言提示
+作为可选系统上下文；收到 HTTP 400 或 422 时再尝试原始 Base64、`format: "wav"`
+及固定转写指令。
+原生 multipart 上传先在内存中准备完整请求体，确保服务提前拒绝上传时仍能根据 HTTP
+状态切换协议。错误响应正文读取失败时，也保留已经收到的 HTTP 状态。
+鉴权失败、限流、服务器错误、网络异常和成功响应解析失败均不触发协议重试。成功选择
+的格式会在后续音频分块中复用，不根据域名或模型名猜测。CLI 可显式选择
+`--protocol openai-transcriptions` 或 `--protocol chat-audio`。LLM 后处理使用文本
+`/chat/completions`；两者可以共用地址和 API Key，但 LLM 成功不能验证语音模型。
 
 ## 配置
 
-在 Windows 上，Orally 可以从 `%APPDATA%\Orally\config.toml` 加载本地配置。设置 `ORALLY_CONFIG` 可使用自定义路径。
+Orally 统一读写可执行文件旁的 `config.toml`。若该文件不存在，会依次检查旧
+`ORALLY_CONFIG`、`%APPDATA%\Orally\config.toml` 和 `$HOME/.config/orally/config.toml`
+并复制已有配置。迁移保留原文件，不覆盖已有同目录配置；旧文件无法读取或解析时明确
+报错，不静默重置设置。
 
 初始化提供方预设：
 
 ```powershell
-cargo run -p orally-cli -- config init --provider aliyun-openai
+cargo run -p orally-cli -- config init --provider openai-compatible
 ```
 
 支持的预设：
 
-- `aliyun-openai`
-- `openrouter`
+- `openai-compatible`（默认，使用 `ORALLY_OPENAI_COMPAT_API_KEY`）
 - `openai`
 
 显示当前生效的配置：
@@ -104,10 +121,10 @@ cargo run -p orally-cli -- config show
 更新一个配置值：
 
 ```powershell
-cargo run -p orally-cli -- config set asr.model qwen3-asr-flash
+cargo run -p orally-cli -- config set asr.model whisper-1
 cargo run -p orally-cli -- config set asr.api_key_env ORALLY_OPENAI_COMPAT_API_KEY
 cargo run -p orally-cli -- config set postprocess.mode llm
-cargo run -p orally-cli -- config set postprocess.model deepseek-v4-flash-0731
+cargo run -p orally-cli -- config set postprocess.model gpt-4o-mini
 cargo run -p orally-cli -- config set postprocess.fallback_to_builtin true
 cargo run -p orally-cli -- config set output.paste_delay_ms 300
 cargo run -p orally-cli -- config set output.restore_clipboard true
@@ -126,7 +143,6 @@ cargo run -p orally-cli -- config set output.show_changes true
 - `asr.api_key`
 - `asr.api_key_env`
 - `asr.language`
-- `asr.prompt`
 - `postprocess.mode`
 - `postprocess.base_url`
 - `postprocess.model`
@@ -175,37 +191,74 @@ cargo run -p orally-desktop
 
 桌面应用会在启动时注册 `hotkey.preset` 选择的 Windows 听写热键。新配置默认为
 `Ctrl+Alt+Space`；无法读取配置或 preset 无效时也会回退到这个快捷键。按一次开始录音。
-屏幕底部附近会出现一个置顶的小型提示框。再次按下相同热键，或单击 `停止`，即可停止
-录音、转写、后处理，并将最终文本粘贴回录音开始时处于活动状态的窗口。
+屏幕底部附近会出现一个黑灰色、半透明的圆角置顶录音框。底部条形随麦克风音量波动，
+静音时恢复为一排短点。再次按下相同热键，或单击停止图标，即可停止录音、转写、
+后处理，并将最终文本粘贴回录音开始时处于活动状态的窗口。
 
 桌面应用目前仅使用 Toggle Mode。静音、松开按键、固定时长和最长时长都不会停止录音；只有再次按下热键或执行显式停止操作才会结束录音。旧有的自动停止字段仍保留在配置 schema 中以兼容现有配置，但桌面运行时会忽略这些字段。
 
-托盘菜单也可以启动或停止听写、暂停或恢复热键、打开设置以及退出 Orally。
+托盘菜单也可以启动或停止听写、暂停或恢复热键、打开设置以及退出 Orally。“配置”子菜单
+列出所有已保存配置，当前配置前有圆点。点击即可立即启用，并同步设置窗口的选择，同时
+保留未保存草稿。保存新配置或名称后，菜单会自动刷新。
 
-当前原型仍然提供固定的热键预设列表，并且只在启动时读取变更。直接捕获快捷键、即时
-冲突验证以及无需重启即可完成注册，都是在已完成 shared-speech（共享语音）里程碑之后
-仍处于 Deferred（已推迟）状态的产品改进。
+在设置页点击听写快捷键后，直接按下需要的组合，按 Esc 可取消。保存时立即注册新组合，
+注册冲突或保存失败会保留旧绑定。录入期间临时释放旧热键，结束录入后恢复。快捷键设置
+只保留开始/停止听写；设置窗口内的 `Ctrl+S` 继续作为固定保存操作。
 
 设置界面可以编辑：
 
-- API 提供方预设、base URL、模型、协议、API key、API key 环境变量、语言提示和 ASR prompt。
-- AI 后处理模式、兼容 OpenAI 的 LLM 端点/模型/API key、system prompt 和 user template。
-- 全局快捷键、粘贴延迟、输出 locale、Raw Transcript（原始转写文本）模式和剪贴板恢复。
+- OpenAI 兼容语音服务的地址、模型和 API Key。
+- AI 后处理模式及有序的 OpenAI 兼容模型和 Prompt 节点。
+- 全局快捷键、粘贴延迟、Raw Transcript（原始转写文本）模式和剪贴板恢复。
 - CLI 语音命令使用的共享 `output.insert` 与 `output.show_changes` 设置。Desktop 当前始终
   插入 Final Text（最终文本），且不显示处理变更列表。
 - 外部请求隐私开关和本地历史记录。
 
-保存操作会写入 CLI 使用的同一份本地配置；在 Windows 上通常位于 `%APPDATA%\Orally\config.toml`。将 API Key 字段留空即可仅使用环境变量引用。
+保存操作统一写入可执行文件旁的 `config.toml`，桌面端与 CLI 放在同一目录时共用此文件。
+设置页不再展示输出语言与配置路径控件，已有 locale 值仍保留。将 API Key 字段留空即可
+仅使用环境变量引用。
 
 ## 桌面端 AI 后处理
+
+模型配置页合并了配置选择和管线编辑。顶部可以切换、新建、导入、导出或保存配置，下方
+可以修改当前配置名称。切换会保留未保存草稿；保存会写入配置列表，并启用当前选择的
+配置。语音识别在上，后处理在下。语音识别填写服务地址、模型和 API Key；后处理还提供
+Prompt。桌面 ASR、连通性测试及录音测试共用转写与 Chat Audio 的自动协商。
+旧配置规范为 `auto`，保留原有服务字段；界面不展示识别协议选项。
+语音识别不再提供可配置的 Prompt。旧配置中的 ASR Prompt 在载入时忽略，再次保存时
+移除。后续计划通过词典功能提供识别词汇，当前尚未实现。
+API Key 默认用圆点遮挡，可通过眼睛
+按钮切换显示，仍以明文保存。
+输出、隐私和快捷键仍是设置页中的全局选项。
+
+每个后处理模型拥有独立的服务地址、凭据、Prompt 及有序 Prompt 子节点。模型和 Prompt
+支持添加、移除、启用与排序。AI 模式下，启用的模型依次运行，每一步接收前一步输出。
+Prompt 子节点追加到所属模型的系统指令中。本地模式忽略 AI 节点；全部 AI 模型禁用时
+直接保留原始转写。现有单模型 TOML 仍可载入，隐藏的语言、环境变量、模板和回退设置
+保留原有值。
+
+语音和每个 LLM 服务都提供连通性测试，使用当前填写的字段。顶部“测试”默认直接模拟
+一次语音输入：开始录音，说话，再停止录音，执行语音识别和已配置的完整后处理链。
+开始录音时读取当前配置和全局设置，包括所有未保存的修改。语音卡片中的“录音测试”
+只运行 ASR；弹窗也保留仅运行后处理的文本测试，无需上传音频。结果展示识别文本和
+最终输出，不保存配置、插入文本或写入历史。关闭或取消会释放麦克风；每次测试录音
+最多两分钟、15 MiB。
+连通性测试直接报告服务失败；输入输出测试使用已配置的本地回退时会显示警告。禁止
+外部请求的隐私设置也适用于测试。浏览器预览需授权麦克风并直接请求服务，需要服务
+允许 CORS；原生应用复用现有麦克风录音能力，不受浏览器 CORS 限制。
+
+导出会保存一套 JSON 配置，包括直接填写的 API Key。导入支持 JSON 配置或完整配置文档，
+Desktop App 也支持现有 TOML。导入内容先成为新草稿，保存后生效。浏览器预览单独使用
+本地存储，TOML 解析需要原生应用。CLI 保留单模型流程。参阅
+[编辑器存储决策](docs/adr/0008-edit-self-contained-model-profiles.zh-CN.md)。
 
 Orally 默认使用内置的本地清理器。请设置：
 
 ```toml
 [postprocess]
 mode = "llm"
-base_url = "https://ws-xzr3kkbjij82s72f.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-model = "deepseek-v4-flash-0731"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
 api_key_env = "ORALLY_OPENAI_COMPAT_API_KEY"
 ```
 
@@ -229,17 +282,19 @@ JSONL 历史记录追加到当前配置文件旁的 `history.jsonl` 中。每条
 
 ## 可执行文件本地化的 Windows 原型
 
-Orally 目前支持无需注册为 Windows 输入法的可执行文件本地配置。配置路径优先级依次为：
-显式指定的 `ORALLY_CONFIG` 路径、`Orally.exe` 旁已存在的 `config.toml`，最后是
-`%APPDATA%\Orally\config.toml`。
+Orally 无需注册为 Windows 输入法，`config.toml` 始终位于可执行文件旁，包括首次保存。
+旧路径仅作为迁移来源；程序目录不可写时会明确报错，不改用其他目录保存。
 
 这是一个配置本地化原型，不是延期产品设计中定义的完整 Portable Installation 合约。
 
 构建便携目录：
 
 ```powershell
-.\scripts\package-portable.ps1
+just build
 ```
+
+该命令编译内嵌界面的优化版 Release 可执行文件，运行时无需 Vite 开发服务器。
+编译失败时会立即停止打包。
 
 该脚本会写入：
 
@@ -252,7 +307,7 @@ dist\portable\Orally\config.example.toml
 从该目录运行 `Orally.exe`，即可让设置保留在便携目录中。也可以通过 CLI 在可执行文件目录创建相同配置：
 
 ```powershell
-cargo run -p orally-cli -- config init --provider aliyun-openai --portable
+cargo run -p orally-cli -- config init --provider openai-compatible --portable
 ```
 
 打包脚本不会覆盖已有的 `config.toml`；它始终会写入最新的 `config.example.toml` 作为参考。

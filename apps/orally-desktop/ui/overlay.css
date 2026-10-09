@@ -1,22 +1,16 @@
 :root {
-  color-scheme: light;
-  --surface: #f9fbfa;
-  --surface-high: #eef3f1;
-  --primary: #006a6a;
-  --on-primary: #ffffff;
-  --text: #161d1c;
-  --muted: #52605e;
-  font-family:
-    "Segoe UI",
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    sans-serif;
+  color-scheme: dark;
+  font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  font-synthesis: none;
+  --overlay-surface: rgba(20, 20, 22, 0.86);
+  --overlay-border: rgba(174, 178, 187, 0.2);
+  --overlay-text: #d6d7dc;
+  --overlay-muted: #909199;
+  --overlay-meter: #b9bac2;
+  --overlay-recording: #ed595f;
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 html,
 body {
@@ -34,74 +28,127 @@ body {
 
 .dictation-pill {
   display: grid;
-  grid-template-columns: 24px 1fr 76px;
-  gap: 14px;
-  align-items: center;
-  width: calc(100% - 16px);
+  grid-template-rows: 22px 20px;
+  gap: 8px;
+  width: min(284px, calc(100% - 16px));
   height: 72px;
-  padding: 0 14px 0 18px;
-  border: 1px solid rgb(0 0 0 / 10%);
-  border-radius: 8px;
-  color: var(--text);
-  background: color-mix(in srgb, var(--surface) 94%, white);
-  box-shadow: 0 14px 38px rgb(0 0 0 / 20%);
+  padding: 10px 14px;
+  border: 1px solid var(--overlay-border);
+  border-radius: 16px;
+  color: var(--overlay-text);
+  background: var(--overlay-surface);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
-.pulse {
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  background: var(--primary);
-  box-shadow: 0 0 0 0 rgb(0 106 106 / 45%);
-  animation: pulse 1.35s ease-out infinite;
-}
-
-.copy {
-  display: grid;
-  gap: 3px;
+.overlay-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
 }
 
-strong {
+.overlay-status {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 8px;
+  min-width: 0;
+}
+
+.recording-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--overlay-recording);
+}
+
+.dictation-pill[data-recording="false"] .recording-dot { background: var(--overlay-muted); }
+
+#title {
   overflow: hidden;
-  font-size: 15px;
-  font-weight: 650;
-  line-height: 1.2;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-span {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.overlay-brand {
+  flex-shrink: 0;
+  color: var(--overlay-muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  line-height: 20px;
 }
 
-button {
-  height: 40px;
+#stop {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  flex-shrink: 0;
   border: 0;
-  border-radius: 8px;
-  color: var(--on-primary);
-  background: var(--primary);
+  border-radius: 5px;
+  color: #acadb5;
+  background: transparent;
   cursor: pointer;
-  font: inherit;
-  font-weight: 650;
 }
 
-button:active {
-  transform: translateY(1px);
+#stop:hover:not(:disabled) { background: rgba(255, 255, 255, 0.09); }
+#stop:focus-visible { outline: 2px solid #c7c8d0; outline-offset: 2px; }
+#stop:disabled { cursor: default; opacity: 0.5; }
+#stop svg { width: 12px; height: 12px; }
+
+.overlay-bottom { min-width: 0; }
+
+.volume-meter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 20px;
+  padding: 0 1px;
 }
 
-@keyframes pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgb(0 106 106 / 45%);
-  }
+.meter-bar {
+  width: 3px;
+  height: 2px;
+  flex-shrink: 0;
+  border-radius: 1px;
+  background: var(--overlay-meter);
+  opacity: 0.95;
+  transition: height 55ms linear;
+}
 
-  72%,
-  100% {
-    box-shadow: 0 0 0 14px rgb(0 106 106 / 0%);
-  }
+.volume-meter.is-silent .meter-bar { transition: none; }
+
+#detail {
+  overflow: hidden;
+  margin: 0;
+  color: var(--overlay-muted);
+  font-size: 11px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+[hidden] { display: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .meter-bar { transition: none; }
 }
