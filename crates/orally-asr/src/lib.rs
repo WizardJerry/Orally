@@ -2,6 +2,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use orally_audio::{decode_wav_pcm16, encode_wav_pcm16, split_pcm16_audio};
 use orally_core::{AsrProvider, AudioFormat, AudioInput, OrallyError, Transcript};
+use orally_diagnostics::{HttpTrace, Protocol};
 use reqwest::blocking::{multipart, Client};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -36,13 +37,14 @@ impl From<RequestFailure> for OrallyError {
 
 fn successful_response(
     response: reqwest::blocking::Response,
+    trace: &mut HttpTrace,
 ) -> Result<reqwest::blocking::Response, RequestFailure> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
     }
-    let body = response
-        .text()
+    let body = trace
+        .error_text(response)
         .unwrap_or_else(|error| format!("could not read provider error response body: {error}"));
     Err(RequestFailure::Http { status, body })
 }
@@ -141,15 +143,15 @@ impl OpenAiCompatibleAsrProvider {
             body.buffer()
                 .map_err(|error| OrallyError::Asr(error.to_string()))?;
         }
-        let response = self
-            .client
-            .execute(request)
+        let mut trace = HttpTrace::new(Protocol::Transcriptions);
+        let response = trace
+            .send(&self.client, request)
             .map_err(|error| OrallyError::Asr(error.to_string()))?;
 
-        let response = successful_response(response)?;
+        let response = successful_response(response, &mut trace)?;
 
-        let body = response
-            .json::<TranscriptionResponse>()
+        let body = trace
+            .json::<TranscriptionResponse>(response)
             .map_err(|error| OrallyError::Asr(error.to_string()))?;
 
         if body.text.trim().is_empty() {
@@ -158,6 +160,7 @@ impl OpenAiCompatibleAsrProvider {
             );
         }
 
+        trace.success();
         Ok(Transcript {
             text: body.text,
             language: body.language,
@@ -284,18 +287,25 @@ impl ChatAudioAsrProvider {
             stream: false,
         };
 
-        let response = self
+        let request = self
             .client
             .post(self.config.endpoint())
             .bearer_auth(&self.config.api_key)
             .json(&request)
-            .send()
+            .build()
+            .map_err(|error| OrallyError::Asr(error.to_string()))?;
+        let mut trace = HttpTrace::new(match format {
+            ChatAudioFormat::Standard => Protocol::ChatAudioBase64,
+            ChatAudioFormat::DataUrl => Protocol::ChatAudioDataUrl,
+        });
+        let response = trace
+            .send(&self.client, request)
             .map_err(|error| OrallyError::Asr(error.to_string()))?;
 
-        let response = successful_response(response)?;
+        let response = successful_response(response, &mut trace)?;
 
-        let body = response
-            .json::<ChatCompletionResponse>()
+        let body = trace
+            .json::<ChatCompletionResponse>(response)
             .map_err(|error| OrallyError::Asr(error.to_string()))?;
         let text = body
             .choices
@@ -311,6 +321,7 @@ impl ChatAudioAsrProvider {
             );
         }
 
+        trace.success();
         Ok(Transcript {
             text,
             language: self.config.language.clone(),

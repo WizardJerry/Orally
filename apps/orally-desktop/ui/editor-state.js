@@ -27,12 +27,9 @@ export const DEFAULT_CONFIG = {
   },
   output: {
     locale: "zh-CN",
-    raw: false,
-    show_changes: false,
     insert: false,
-    paste_delay_ms: 300,
-    restore_clipboard: true,
-    restore_clipboard_delay_ms: 250,
+    direct_output: true,
+    auto_copy: false,
   },
   audio: {
     dictate_seconds: 3,
@@ -45,6 +42,8 @@ export const DEFAULT_CONFIG = {
     silence_threshold: 0.02,
   },
   hotkey: { preset: "ctrl-alt-space" },
+  appearance: { dark_mode: true },
+  logging: { auto_cleanup: true, retention_days: 1 },
   privacy: {
     allow_external_requests: true,
     history_enabled: true,
@@ -113,8 +112,11 @@ function normalizeAsr(value = {}) {
 
 export function normalizeConfig(value = DEFAULT_CONFIG) {
   const config = { ...clone(DEFAULT_CONFIG), ...clone(value) };
-  for (const section of ["output", "audio", "hotkey", "privacy"]) {
+  for (const section of ["output", "audio", "hotkey", "privacy", "appearance", "logging"]) {
     config[section] = { ...clone(DEFAULT_CONFIG[section]), ...clone(value[section] ?? {}) };
+  }
+  for (const key of ["raw", "show_changes", "paste_delay_ms", "restore_clipboard", "restore_clipboard_delay_ms"]) {
+    delete config.output[key];
   }
   config.asr = normalizeAsr(value.asr);
   config.postprocess = normalizePostprocess(value.postprocess);
@@ -199,14 +201,16 @@ export function validateImport(value) {
   if (value.postprocess !== undefined) validatePostprocess(value.postprocess);
   const globalTypes = {
     output: {
-      locale: "string", raw: "boolean", show_changes: "boolean", insert: "boolean",
-      paste_delay_ms: "number", restore_clipboard: "boolean", restore_clipboard_delay_ms: "number",
+      locale: "string", insert: "boolean",
+      direct_output: "boolean", auto_copy: "boolean",
     },
     audio: {
       dictate_seconds: "number", record_output: "string", input_mode: "string", auto_stop_enabled: "boolean",
       min_record_ms: "number", max_record_ms: "number", silence_timeout_ms: "number", silence_threshold: "number",
     },
     hotkey: { preset: "string" },
+    appearance: { dark_mode: "boolean" },
+    logging: { auto_cleanup: "boolean", retention_days: "number" },
     privacy: { allow_external_requests: "boolean", history_enabled: "boolean", history_path: "string?" },
   };
   for (const [section, types] of Object.entries(globalTypes)) {
@@ -378,10 +382,17 @@ export class ConfigEditor {
       .filter((profile) => !this.hasSavedBaseline || JSON.stringify(profile) !== JSON.stringify(savedProfiles.get(profile.id)))
       .map((profile) => [profile.id, profile]));
     const merged = clone(incoming);
+    if (incoming.active_profile_id === previous.active_profile_id
+      && local.profiles.some((profile) => profile.id === local.active_profile_id)) {
+      merged.active_profile_id = local.active_profile_id;
+    }
     merged.profiles = incoming.profiles.map((profile) => clone(draftProfiles.get(profile.id) ?? profile));
     const incomingIds = new Set(incoming.profiles.map((profile) => profile.id));
     for (const [id, profile] of draftProfiles) {
       if (!incomingIds.has(id)) merged.profiles.push(clone(profile));
+    }
+    if (!merged.profiles.some((profile) => profile.id === merged.active_profile_id)) {
+      merged.active_profile_id = incoming.active_profile_id;
     }
     // Saved selection belongs to the tray. Locally edited profiles and global
     // sections remain drafts while unchanged sections receive saved updates.

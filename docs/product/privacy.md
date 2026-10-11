@@ -59,6 +59,18 @@ change requires its own behavior and privacy review.
 This is a JSONL history prototype, not the complete Local History concept in
 [CONTEXT](../../CONTEXT.md).
 
+### Diagnostic logs (authorized addition)
+
+Desktop diagnostics store DEBUG-level metadata in executable-local
+`logs/orally-YYYY-MM-DD.jsonl`, using the machine's local calendar date.
+Only request protocol, method, status, elapsed time, byte counts, fixed failure
+categories, and recording duration/sample format metadata are retained. Request
+and response bodies, transcripts, prompts, headers, credentials, and configured
+URLs are excluded. Settings control automatic cleanup and retention in calendar
+days (default: today only). Cleanup runs at startup, on writes, and during idle
+maintenance; disabling cleanup retains daily files until it is enabled again.
+These logs are separate from the existing text-bearing history feature.
+
 ### Audio
 
 - Recorded audio is held in memory for the active session.

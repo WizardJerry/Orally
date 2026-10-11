@@ -8,7 +8,7 @@ learning-oriented Rust refactoring project.
 The current useful slice records or accepts audio, sends it to an
 OpenAI-compatible speech-recognition provider, refines the transcript locally or
 with an AI postprocessor, and produces paste-ready text. The Windows Desktop App
-also provides Toggle Mode, tray controls, an overlay, and clipboard insertion.
+also provides Toggle Mode, tray controls, an overlay, and direct Unicode text insertion.
 
 ## Development Approach
 
@@ -31,8 +31,9 @@ installed, run this from the repository root:
 just dev
 ```
 
-This installs frontend development dependencies with `npm ci` when Tauri or Vite
-is missing, then starts the Desktop App through `tauri dev`. Tauri starts Vite at
+This installs locked frontend dependencies with `npm ci --include=dev` when
+Tauri, Vite, React, or the Vite React/Tailwind integrations are missing, then
+starts the Desktop App through `tauri dev`. Tauri starts Vite at
 `http://localhost:1420`, reloads frontend edits, and rebuilds the app after Rust
 changes. Later starts reuse the installed dependencies. Run `just setup` after
 changing `package.json` or `package-lock.json` to refresh them. The first Rust
@@ -51,6 +52,22 @@ Run `just` or `just --list` to see the commands:
 | `just check` | Check Rust formatting and compilation |
 | `just fmt` | Format the Rust workspace |
 
+The frontend uses React, Tailwind CSS 4, and official shadcn/ui `new-york`
+Radix components with a shared black-and-white theme. Editable JSX component
+source lives in `apps/orally-desktop/ui/components/ui`.
+
+Run frontend checks and preview the production build from the repository root:
+
+```powershell
+npm.cmd --prefix apps/orally-desktop run ui:test
+npm.cmd --prefix apps/orally-desktop run ui:build
+npm.cmd --prefix apps/orally-desktop run ui:preview
+```
+
+`ui:build` produces the main page and recording overlay in
+`apps/orally-desktop/dist`. `ui:preview` serves that build at
+`http://localhost:4173`; `just dev-ui` serves development edits at port 1420.
+
 ## Current Prototype
 
 This repository currently contains:
@@ -65,7 +82,7 @@ This repository currently contains:
   transcription, text processing, dictation, hotkey listening, and
   configuration.
 - `apps/orally-desktop`: a Tauri desktop shell with a Windows tray icon and a
-  Material-style settings UI backed by the local TOML config.
+  React/shadcn settings UI backed by the local TOML config.
 - `docs/product`: product definition, architecture notes, privacy model,
   roadmap, and future product grilling notes.
 - `docs/engineering`: human-readable implementation and platform notes.
@@ -79,14 +96,13 @@ cargo run -p orally-cli -- process "嗯 今天 我想 写 一封 邮件 给 visu
 cargo run -p orally-cli -- record --seconds 3 --output orally-recording.wav
 cargo run -p orally-cli -- transcribe --file orally-recording.wav --model <model>
 cargo run -p orally-cli -- dictate --seconds 3 --model <model>
-cargo run -p orally-cli -- transcribe --file orally-recording.wav --raw
-cargo run -p orally-cli -- dictate --seconds 3 --show-changes
-cargo run -p orally-cli -- dictate --seconds 3 --insert --paste-delay-ms 1200
-cargo run -p orally-cli -- listen --paste-delay-ms 300
+cargo run -p orally-cli -- transcribe --file orally-recording.wav
+cargo run -p orally-cli -- dictate --seconds 3
+cargo run -p orally-cli -- dictate --seconds 3 --insert
+cargo run -p orally-cli -- listen
 cargo run -p orally-cli -- config init --provider openai-compatible
-cargo run -p orally-cli -- config set output.paste_delay_ms 300
 cargo run -p orally-cli -- config show
-cargo run -p orally-desktop
+just dev
 ```
 
 The `record` command captures audio from the default microphone and writes a
@@ -94,13 +110,11 @@ PCM16 WAV file. `transcribe` sends an existing WAV to the configured ASR
 provider. `dictate` records from the microphone and sends the captured audio to
 ASR in one step.
 
-By default, remote ASR output is passed through Orally's built-in post-processing
-pipeline. Use `--raw` to print the provider transcript without post-processing,
-or `--show-changes` to show local cleanup actions.
+Remote ASR output from CLI voice commands passes through Orally's built-in
+post-processing pipeline.
 
-On Windows, use `--insert` to paste the final text into the currently focused
-input field. The CLI waits for `--paste-delay-ms` before pasting so you can focus
-the target app after recording or transcription completes.
+On Windows, use `--insert` to deliver the final text to the currently focused
+input field as soon as processing completes.
 
 Use `listen` on Windows to keep Orally running and trigger dictation with
 `Ctrl+Alt+Space`. Press once to start recording, then press the same hotkey again
@@ -131,14 +145,34 @@ names. The CLI can explicitly select `--protocol openai-transcriptions` or
 `--protocol chat-audio`. LLM post-processing uses text `/chat/completions`;
 sharing a service URL and API Key does not verify the speech model.
 
+## Diagnostic Logs
+
+The Desktop App creates `logs/orally-YYYY-MM-DD.jsonl` beside its executable.
+DEBUG is the most detailed supported metadata level and is enabled by default.
+Logs contain HTTP attempt IDs, protocol, status, timing, byte-count metadata and
+recording duration, sample rate and channels. They exclude bodies, transcripts,
+prompts, headers, credentials and configured URLs. HTTP response sizes are
+reported when available; they are not packet-level traffic captures.
+
+Under Settings → Diagnostic logs, automatic cleanup defaults to retaining only
+the current local calendar day. Choose 3, 7 or 30 days, or turn off cleanup to keep
+daily files. Cleanup runs at startup, on writes and every 30 seconds while idle;
+restarting on the same day appends to that day's file. `setting.toml` stores
+`logging.auto_cleanup = true` and `logging.retention_days = 1` (positive days).
+This retention is independent of the existing text-bearing `history.jsonl`.
+
 ## Configuration
 
-Orally reads and saves `config.toml` beside its executable. If that file is
-missing, it copies an existing legacy configuration from `ORALLY_CONFIG`,
-`%APPDATA%\Orally\config.toml`, or `$HOME/.config/orally/config.toml`, in that
-order. The original file is retained, and an existing executable-local file is
-never replaced by migration. An unreadable or invalid legacy file reports an
-error instead of silently resetting settings.
+Orally stores application settings in `setting.toml` beside its executable and
+each model profile in a separate `profiles/*.toml` file. On first launch it
+migrates an existing adjacent `config.toml`, or the former `ORALLY_CONFIG`,
+`%APPDATA%\Orally\config.toml`, or `$HOME/.config/orally/config.toml` location.
+The original file is retained; existing split settings are never replaced by
+migration. Invalid files report an error instead of silently resetting settings.
+The desktop app automatically saves and applies application settings. External
+file edits synchronize after two matching reads, usually within one second;
+invalid intermediate writes are reported and retried without replacing UI drafts.
+Model profiles still use explicit Save. Their unsaved drafts survive settings sync.
 
 Initialize a provider preset:
 
@@ -165,9 +199,8 @@ cargo run -p orally-cli -- config set asr.api_key_env ORALLY_OPENAI_COMPAT_API_K
 cargo run -p orally-cli -- config set postprocess.mode llm
 cargo run -p orally-cli -- config set postprocess.model gpt-4o-mini
 cargo run -p orally-cli -- config set postprocess.fallback_to_builtin true
-cargo run -p orally-cli -- config set output.paste_delay_ms 300
-cargo run -p orally-cli -- config set output.restore_clipboard true
-cargo run -p orally-cli -- config set output.show_changes true
+cargo run -p orally-cli -- config set output.direct_output true
+cargo run -p orally-cli -- config set output.auto_copy false
 ```
 
 Direct `asr.api_key` and `postprocess.api_key` values are supported, but they
@@ -193,12 +226,9 @@ Common keys:
 - `postprocess.user_template`
 - `postprocess.fallback_to_builtin`
 - `output.locale`
-- `output.raw`
-- `output.show_changes`
 - `output.insert`
-- `output.paste_delay_ms`
-- `output.restore_clipboard`
-- `output.restore_clipboard_delay_ms`
+- `output.direct_output`
+- `output.auto_copy`
 - `audio.dictate_seconds`
 - `audio.record_output`
 - `audio.input_mode`
@@ -221,14 +251,14 @@ $env:ORALLY_OPENAI_COMPAT_API_KEY="..."
 
 If you want the desktop app to run without a pre-set environment variable, the
 local config can also store `asr.api_key`. That value is saved in
-`config.toml`, so use it only on machines you trust.
+its individual `profiles/*.toml` file, so use it only on machines you trust.
 
 ## Desktop Settings App
 
 Run the current desktop settings shell:
 
 ```powershell
-cargo run -p orally-desktop
+just dev
 ```
 
 The app uses Tauri v2 and keeps a tray icon alive while the settings window is
@@ -258,25 +288,22 @@ and updates the settings window while retaining unsaved drafts. Saving profiles,
 including new names, refreshes this menu.
 
 Click the dictation shortcut in Settings, then press the desired combination.
-Escape cancels capture. Saving registers the new shortcut immediately; a
+Escape cancels capture. Completing capture automatically saves and registers the shortcut; a
 registration conflict or failed save preserves the previous binding. The old
 binding is temporarily released during capture and restored when capture ends.
-Settings only exposes the dictation shortcut; `Ctrl+S` remains the fixed save
-action inside the settings window.
+Settings only exposes the dictation shortcut; `Ctrl+S` saves model profiles on
+the model page. Application settings do not require a Save button.
 
 The settings UI can edit:
 
 - OpenAI-compatible speech service URL, model, and API key.
 - AI post-processing mode and ordered OpenAI-compatible model and Prompt nodes.
-- Global shortcut, paste delay, Raw Transcript mode, and
-  clipboard restoration.
-- The shared `output.insert` and `output.show_changes` settings used by CLI
-  voice commands. Desktop currently always inserts Final Text and does not show
-  the processing-change list.
+- Global shortcut, direct output, and optional automatic clipboard copying.
 - External-request privacy switch and local history.
+- The final Other section contains a Dark mode checkbox, enabled by default.
 
-Saving writes `config.toml` beside the executable. Desktop and CLI share the
-file when installed in the same directory. Settings omits output language and
+Desktop and CLI share `setting.toml` and `profiles/` when installed in the same
+directory. Settings omits output language and
 configuration-path controls; the existing locale value is retained. Leave the
 API Key field blank to use only an environment variable reference.
 
@@ -344,8 +371,6 @@ response. Use `postprocess.system_prompt` and `postprocess.user_template` to
 customize the cleanup behavior. The user template supports `{{transcript}}` and
 `{{locale}}`.
 
-Set `output.raw = true` to bypass both built-in and AI post-processing.
-
 If `postprocess.fallback_to_builtin = true`, an error returned by the Desktop AI
 processor falls back to Orally's local cleaner. A missing AI credential or
 processor-construction error currently fails before that fallback. CLI voice
@@ -366,17 +391,22 @@ In the Desktop flow, set `privacy.allow_external_requests = false` to block
 remote ASR and AI post-processing requests. CLI network commands do not
 currently enforce this setting.
 
-On Windows, Orally uses the clipboard fallback insertion path. When
-`output.restore_clipboard = true`, Orally restores the previous text clipboard
-after paste and removes the generated text from the clipboard. This first
-implementation preserves previous text clipboard content; non-text clipboard
-formats are not restored yet.
+On Windows, Orally defaults to `output.direct_output = true`: Unicode input
+events deliver Final Text to the focused input without accessing the clipboard.
+`output.auto_copy = false` is the default; enable it to also copy the result
+after direct insertion. Turn direct output off to paste through the clipboard,
+which leaves the result on the clipboard. In that mode the automatic-copy switch
+is on and disabled; returning to direct output restores the saved copy preference.
+The desktop and CLI insertion paths share these settings. Existing configurations
+without the new fields receive the same defaults. Removed raw-output,
+processing-change display, output-delay, and clipboard-restoration settings in
+older files are ignored and omitted the next time settings are saved.
 
 ## Executable-local Windows Prototype
 
 Orally uses executable-local configuration without registering as a Windows
-input method. `config.toml` always lives beside the executable, including on
-first save. Legacy locations are migration sources only, and directory write
+input method. `setting.toml` and `profiles/` always live beside the executable.
+Legacy locations are migration sources only, and directory write
 errors are reported without redirecting configuration elsewhere.
 
 This is a config-local prototype, not the complete Portable Installation
@@ -388,14 +418,19 @@ Build a portable folder:
 just build
 ```
 
-This compiles an optimized release executable with the UI embedded, so it does
-not need the Vite development server. A failed build stops packaging.
+This installs locked frontend dependencies with `npm ci --include=dev`, runs
+`ui:build`, then compiles the optimized release executable with both built UI
+pages embedded. The packaged app does not need a development server. A failed
+dependency installation, frontend build, or Rust build stops packaging.
 
 The script writes:
 
 ```text
 dist\portable\Orally\Orally.exe
-dist\portable\Orally\config.toml
+dist\portable\Orally\setting.toml
+dist\portable\Orally\profiles\default.toml
+dist\portable\Orally\setting.example.toml
+dist\portable\Orally\profile.example.toml
 dist\portable\Orally\config.example.toml
 ```
 
@@ -406,8 +441,48 @@ directory. You can also create the same executable-directory config from the CLI
 cargo run -p orally-cli -- config init --provider openai-compatible --portable
 ```
 
-The packaging script does not overwrite an existing `config.toml`; it always
-writes the latest `config.example.toml` for reference.
+The packaging script preserves existing settings, profiles, and legacy
+`config.toml`. It updates the example documents, including a legacy import example.
+An existing legacy installation is migrated on first launch.
+
+## Automatic Releases
+
+[release](.github/workflows/release.yml) automatically builds
+and publishes a Windows x64 portable ZIP when a version tag such as `v0.1.0` is
+pushed. Tags must use `vMAJOR.MINOR.PATCH` and point to a commit in the history of
+remote `main`; the workflow checks this before building. Ordinary branch pushes
+do not publish releases. Merge the workflow into `main` before tagging a release.
+
+After merging and pushing the intended changes to `main`, publish a version:
+
+```powershell
+git switch main
+git pull --ff-only origin main
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
+
+Use a new version tag for each release. Both annotated and lightweight tags are
+supported. The workflow builds the tagged commit, even if `main` advances later.
+
+The workflow uses the existing packaging script, runs the frontend and Rust
+workspace tests, and creates a Release using the pushed tag (for example,
+`Orally v0.1.0`). The latest publication is marked **Latest**. Each
+Release contains `Orally-<tag>-windows-x64-portable.zip` and its SHA-256
+checksum. It does not build installers or the CLI. Re-running a failed workflow
+resumes its draft Release; an already published Release is left unchanged.
+The embedded app version still comes from the project manifests; update those
+before tagging when changing the app version.
+
+Download the ZIP from [Releases](https://github.com/WizardJerry/Orally/releases),
+extract it into a writable folder, and run `Orally/Orally.exe`. The destination
+computer needs Microsoft Edge WebView2 Runtime. When upgrading, preserve your
+existing `setting.toml` and `profiles/` instead of replacing them with the
+packaged defaults.
+
+No custom secret is needed: only the publication job receives `contents: write`
+through the built-in `GITHUB_TOKEN`. Repository or organization policies must
+allow that permission and the actions used by the workflow.
 
 ## Direction
 

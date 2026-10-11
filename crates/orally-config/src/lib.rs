@@ -6,6 +6,9 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+mod store;
+pub use store::{AppSettings, AppearanceConfig, ConfigStore, LoggingConfig};
+
 pub const OPENAI_COMPAT_BASE_URL: &str = "https://api.openai.com/v1";
 pub const OPENAI_COMPAT_API_KEY_ENV: &str = "ORALLY_OPENAI_COMPAT_API_KEY";
 pub const OPENAI_COMPAT_ASR_MODEL: &str = "whisper-1";
@@ -30,6 +33,10 @@ pub struct AppConfig {
     pub hotkey: HotkeyConfig,
     #[serde(default)]
     pub privacy: PrivacyConfig,
+    #[serde(default)]
+    pub appearance: AppearanceConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -47,10 +54,6 @@ impl AppConfig {
             postprocess: PostprocessConfig {
                 mode: "llm".to_string(),
                 ..PostprocessConfig::default()
-            },
-            output: OutputConfig {
-                paste_delay_ms: 300,
-                ..OutputConfig::default()
             },
             ..Self::default()
         }
@@ -200,33 +203,27 @@ impl Default for PromptNodeConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct OutputConfig {
     pub locale: String,
-    pub raw: bool,
-    pub show_changes: bool,
     pub insert: bool,
-    pub paste_delay_ms: u64,
-    #[serde(default = "default_restore_clipboard")]
-    pub restore_clipboard: bool,
-    #[serde(default = "default_restore_clipboard_delay_ms")]
-    pub restore_clipboard_delay_ms: u64,
+    pub direct_output: bool,
+    pub auto_copy: bool,
 }
 
 impl Default for OutputConfig {
     fn default() -> Self {
         Self {
             locale: "zh-CN".to_string(),
-            raw: false,
-            show_changes: false,
             insert: false,
-            paste_delay_ms: 750,
-            restore_clipboard: true,
-            restore_clipboard_delay_ms: 250,
+            direct_output: true,
+            auto_copy: false,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AudioConfig {
     pub dictate_seconds: u64,
     pub record_output: String,
@@ -260,6 +257,7 @@ impl Default for AudioConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HotkeyConfig {
     pub preset: String,
 }
@@ -273,6 +271,7 @@ impl Default for HotkeyConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PrivacyConfig {
     pub allow_external_requests: bool,
     pub history_enabled: bool,
@@ -389,13 +388,26 @@ impl From<toml::de::Error> for ConfigError {
 }
 
 pub fn config_path() -> Result<PathBuf, ConfigError> {
+    static PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    if let Some(path) = PATH.get() {
+        return Ok(path.clone());
+    }
     let executable = env::current_exe()?;
+    let directory = executable.parent().ok_or(ConfigError::MissingConfigDir)?;
+    let store = ConfigStore::new(directory);
+    if store.settings_path().exists() {
+        let _ = PATH.set(store.settings_path());
+        return Ok(store.settings_path());
+    }
     let legacy_paths = legacy_config_paths(
         env::var_os("ORALLY_CONFIG"),
         env::var_os("APPDATA"),
         env::var_os("HOME"),
     );
-    config_path_for(&executable, &legacy_paths)
+    let legacy = config_path_for(&executable, &legacy_paths)?;
+    store.initialize(legacy.exists().then_some(legacy.as_path()))?;
+    let _ = PATH.set(store.settings_path());
+    Ok(store.settings_path())
 }
 
 fn beside_executable(executable: &Path) -> Option<PathBuf> {
@@ -499,7 +511,7 @@ fn create_new_config(destination: &Path, contents: &[u8]) -> Result<bool, Config
 pub fn portable_config_path() -> Option<PathBuf> {
     env::current_exe()
         .ok()
-        .and_then(|path| beside_executable(&path))
+        .and_then(|path| path.parent().map(|parent| parent.join("setting.toml")))
 }
 
 pub fn existing_portable_config_path() -> Option<PathBuf> {
@@ -512,15 +524,15 @@ pub fn init_portable_config(config: &AppConfig, force: bool) -> Result<PathBuf, 
 
 pub fn load_or_default() -> Result<AppConfig, ConfigError> {
     let path = config_path()?;
-    if !path_is_present(&path)? {
-        return Ok(AppConfig::default());
-    }
-
     load_from_path(path)
 }
 
 pub fn load_from_path(path: impl Into<PathBuf>) -> Result<AppConfig, ConfigError> {
-    let text = fs::read_to_string(path.into())?;
+    let path = path.into();
+    if path.file_name().is_some_and(|name| name == "setting.toml") {
+        return ConfigStore::new(path.parent().ok_or(ConfigError::MissingConfigDir)?).load();
+    }
+    let text = fs::read_to_string(path)?;
     from_toml(&text)
 }
 
@@ -532,6 +544,9 @@ pub fn from_toml(text: &str) -> Result<AppConfig, ConfigError> {
 
 pub fn save_to_path(path: impl Into<PathBuf>, config: &AppConfig) -> Result<(), ConfigError> {
     let path = path.into();
+    if path.file_name().is_some_and(|name| name == "setting.toml") {
+        return ConfigStore::new(path.parent().ok_or(ConfigError::MissingConfigDir)?).save(config);
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -541,10 +556,21 @@ pub fn save_to_path(path: impl Into<PathBuf>, config: &AppConfig) -> Result<(), 
 }
 
 pub fn init_config(config: &AppConfig, force: bool) -> Result<PathBuf, ConfigError> {
-    let path = config_path()?;
-    init_config_at(path, config, force)
+    let path = portable_config_path().ok_or(ConfigError::MissingConfigDir)?;
+    if !force {
+        let legacy = path.with_file_name("config.toml");
+        if path_is_present(&legacy)? {
+            return Err(ConfigError::AlreadyExists(legacy));
+        }
+    }
+    if path_is_present(&path)? && !force {
+        return Err(ConfigError::AlreadyExists(path));
+    }
+    save_to_path(&path, config)?;
+    Ok(path)
 }
 
+#[cfg(test)]
 fn init_config_at(path: PathBuf, config: &AppConfig, force: bool) -> Result<PathBuf, ConfigError> {
     if force {
         save_to_path(path.clone(), config)?;
@@ -579,14 +605,9 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<(), C
             config.postprocess.fallback_to_builtin = parse_bool(key, value)?
         }
         "output.locale" => config.output.locale = value.to_string(),
-        "output.raw" => config.output.raw = parse_bool(key, value)?,
-        "output.show_changes" => config.output.show_changes = parse_bool(key, value)?,
         "output.insert" => config.output.insert = parse_bool(key, value)?,
-        "output.paste_delay_ms" => config.output.paste_delay_ms = parse_u64(key, value)?,
-        "output.restore_clipboard" => config.output.restore_clipboard = parse_bool(key, value)?,
-        "output.restore_clipboard_delay_ms" => {
-            config.output.restore_clipboard_delay_ms = parse_u64(key, value)?
-        }
+        "output.direct_output" => config.output.direct_output = parse_bool(key, value)?,
+        "output.auto_copy" => config.output.auto_copy = parse_bool(key, value)?,
         "audio.dictate_seconds" => config.audio.dictate_seconds = parse_u64(key, value)?,
         "audio.record_output" => config.audio.record_output = value.to_string(),
         "audio.input_mode" => config.audio.input_mode = value.to_string(),
@@ -596,6 +617,15 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<(), C
         "audio.silence_timeout_ms" => config.audio.silence_timeout_ms = parse_u64(key, value)?,
         "audio.silence_threshold" => config.audio.silence_threshold = parse_f32(key, value)?,
         "hotkey.preset" => config.hotkey.preset = value.to_string(),
+        "logging.auto_cleanup" => config.logging.auto_cleanup = parse_bool(key, value)?,
+        "logging.retention_days" => {
+            config.logging.retention_days =
+                value.parse().map_err(|_| ConfigError::InvalidValue {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                })?;
+        }
+        "appearance.dark_mode" => config.appearance.dark_mode = parse_bool(key, value)?,
         "privacy.allow_external_requests" => {
             config.privacy.allow_external_requests = parse_bool(key, value)?
         }
@@ -645,14 +675,6 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<(), C
 
 fn default_asr_protocol() -> String {
     OPENAI_COMPAT_ASR_PROTOCOL.to_string()
-}
-
-fn default_restore_clipboard() -> bool {
-    true
-}
-
-fn default_restore_clipboard_delay_ms() -> u64 {
-    250
 }
 
 fn default_postprocess_fallback_to_builtin() -> bool {
@@ -778,6 +800,39 @@ mod tests {
         assert_eq!(openai.asr.api_key_env, "OPENAI_API_KEY");
         assert_eq!(openai.postprocess.api_key_env, "OPENAI_API_KEY");
         assert!(ProviderPreset::parse("unsupported-provider").is_err());
+    }
+
+    #[test]
+    fn removed_output_settings_are_ignored_and_not_saved_again() {
+        let mut config = from_toml(
+            r#"
+            [output]
+            raw = true
+            show_changes = true
+            paste_delay_ms = 4000
+            restore_clipboard = true
+            restore_clipboard_delay_ms = 500
+            direct_output = false
+            auto_copy = true
+        "#,
+        )
+        .unwrap();
+        assert!(!config.output.direct_output);
+        assert!(config.output.auto_copy);
+        let saved = to_toml(&config).unwrap();
+        for key in [
+            "raw",
+            "show_changes",
+            "paste_delay_ms",
+            "restore_clipboard",
+            "restore_clipboard_delay_ms",
+        ] {
+            assert!(!saved
+                .lines()
+                .any(|line| line.starts_with(&format!("{key} ="))));
+            assert!(set_value(&mut config, &format!("output.{key}"), "true").is_err());
+        }
+        assert_eq!(from_toml(&saved).unwrap(), config);
     }
 
     #[test]
@@ -1077,6 +1132,9 @@ mod tests {
 
         set_value(&mut config, "asr.model", "test-asr-model").expect("model should update");
         set_value(&mut config, "output.insert", "true").expect("insert should update");
+        set_value(&mut config, "output.direct_output", "false")
+            .expect("output method should update");
+        set_value(&mut config, "output.auto_copy", "true").expect("copy preference should update");
         set_value(&mut config, "asr.language", "none").expect("language should clear");
         set_value(&mut config, "audio.input_mode", "hold").expect("mode should update");
         set_value(&mut config, "audio.silence_threshold", "0.015")
@@ -1086,6 +1144,8 @@ mod tests {
 
         assert_eq!(config.asr.model, "test-asr-model");
         assert!(config.output.insert);
+        assert!(!config.output.direct_output);
+        assert!(config.output.auto_copy);
         assert_eq!(config.asr.language, None);
         assert_eq!(config.audio.input_mode, "hold");
         assert_eq!(config.audio.silence_threshold, 0.015);
@@ -1232,7 +1292,7 @@ mod tests {
 
         assert_eq!(
             path.file_name().and_then(|name| name.to_str()),
-            Some("config.toml")
+            Some("setting.toml")
         );
     }
 

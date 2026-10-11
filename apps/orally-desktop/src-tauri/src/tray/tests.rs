@@ -74,8 +74,8 @@ fn profiles_config() -> AppConfig {
         ..AppConfig::default()
     };
     config.output.locale = "en-GB".to_string();
-    config.output.raw = true;
-    config.output.paste_delay_ms = 123;
+    config.output.auto_copy = true;
+    config.output.direct_output = false;
     config.audio.auto_stop_enabled = true;
     config.audio.silence_timeout_ms = 2345;
     config.hotkey.preset = "ctrl-shift-space".to_string();

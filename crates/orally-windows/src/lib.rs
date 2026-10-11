@@ -1,43 +1,50 @@
 use orally_core::{InsertMode, OrallyError, TextInserter};
-use std::thread;
-use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WindowsPasteConfig {
-    pub paste_delay: Duration,
-    pub restore_clipboard: bool,
-    pub restore_clipboard_delay: Duration,
+pub struct WindowsOutputConfig {
+    pub direct_output: bool,
+    pub auto_copy: bool,
 }
 
-impl Default for WindowsPasteConfig {
+impl Default for WindowsOutputConfig {
     fn default() -> Self {
         Self {
-            paste_delay: Duration::from_millis(750),
-            restore_clipboard: true,
-            restore_clipboard_delay: Duration::from_millis(250),
+            direct_output: true,
+            auto_copy: false,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct WindowsClipboardPasteInserter {
-    config: WindowsPasteConfig,
+pub struct WindowsTextInserter {
+    config: WindowsOutputConfig,
 }
 
-impl WindowsClipboardPasteInserter {
-    pub fn new(config: WindowsPasteConfig) -> Self {
+impl WindowsTextInserter {
+    pub fn new(config: WindowsOutputConfig) -> Self {
         Self { config }
     }
 }
 
-impl TextInserter for WindowsClipboardPasteInserter {
-    fn insert(&self, text: &str, _mode: InsertMode) -> Result<(), OrallyError> {
-        thread::sleep(self.config.paste_delay);
-        platform::paste_text(
-            text,
-            self.config.restore_clipboard,
-            self.config.restore_clipboard_delay,
-        )
+impl TextInserter for WindowsTextInserter {
+    fn insert(&self, text: &str, mode: InsertMode) -> Result<(), OrallyError> {
+        if mode == InsertMode::PreviewOnly || text.is_empty() {
+            return Ok(());
+        }
+        if self.config.direct_output {
+            platform::type_text(text)?;
+            if self.config.auto_copy {
+                platform::set_clipboard_text(text).map_err(|error| {
+                    OrallyError::Insertion(format!(
+                        "Text was inserted, but automatic clipboard copy failed: {error}"
+                    ))
+                })?;
+            }
+            Ok(())
+        } else {
+            // Clipboard output always leaves the result available for reuse.
+            platform::paste_text(text)
+        }
     }
 }
 
@@ -312,22 +319,19 @@ mod platform {
     use orally_core::OrallyError;
     use std::mem::size_of;
     use std::ptr::{copy_nonoverlapping, null_mut};
-    use std::slice;
-    use std::thread;
-    use std::time::Duration;
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
-        OpenClipboard, SetClipboardData,
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
     use windows_sys::Win32::System::Memory::{
-        GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
     };
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, RegisterHotKey, SendInput, UnregisterHotKey, INPUT, INPUT_0,
-        INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
-        MOD_WIN, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
+        INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOD_ALT, MOD_CONTROL,
+        MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, VK_CONTROL, VK_LWIN, VK_MENU, VK_RETURN, VK_RWIN,
+        VK_SHIFT, VK_TAB, VK_V,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, GetMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_HOTKEY,
@@ -335,26 +339,49 @@ mod platform {
 
     const ORALLY_HOTKEY_ID: i32 = 1;
 
-    pub fn paste_text(
-        text: &str,
-        restore_clipboard: bool,
-        restore_delay: Duration,
-    ) -> Result<(), OrallyError> {
-        let previous = if restore_clipboard {
-            clipboard_text().ok().flatten()
-        } else {
-            None
-        };
+    pub fn type_text(text: &str) -> Result<(), OrallyError> {
+        send_inputs(&text_inputs(text)?)
+    }
 
-        set_clipboard_text(text)?;
-        send_ctrl_v()?;
-
-        if restore_clipboard {
-            thread::sleep(restore_delay);
-            restore_clipboard_text(previous)?;
+    fn text_inputs(text: &str) -> Result<Vec<INPUT>, OrallyError> {
+        if text.contains('\0') {
+            return Err(OrallyError::Insertion(
+                "Cannot insert text containing a null character".to_string(),
+            ));
         }
+        let mut inputs = Vec::new();
+        let mut chars = text.chars().peekable();
+        while let Some(character) = chars.next() {
+            let special_key = match character {
+                '\r' => {
+                    if chars.peek() == Some(&'\n') {
+                        chars.next();
+                    }
+                    Some(VK_RETURN)
+                }
+                '\n' => Some(VK_RETURN),
+                '\t' => Some(VK_TAB),
+                _ => None,
+            };
+            if let Some(key) = special_key {
+                inputs.push(keyboard_input(key, 0));
+                inputs.push(keyboard_input(key, KEYEVENTF_KEYUP));
+            } else {
+                for unit in character.encode_utf16(&mut [0; 2]) {
+                    for flags in [KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP] {
+                        let mut input = keyboard_input(0, flags);
+                        input.Anonymous.ki.wScan = *unit;
+                        inputs.push(input);
+                    }
+                }
+            }
+        }
+        Ok(inputs)
+    }
 
-        Ok(())
+    pub fn paste_text(text: &str) -> Result<(), OrallyError> {
+        set_clipboard_text(text)?;
+        send_ctrl_v()
     }
 
     pub fn run_hotkey_loop(
@@ -428,7 +455,7 @@ mod platform {
                 || key_is_down(i32::from(VK_RWIN)))
     }
 
-    fn set_clipboard_text(text: &str) -> Result<(), OrallyError> {
+    pub fn set_clipboard_text(text: &str) -> Result<(), OrallyError> {
         let mut utf16 = text.encode_utf16().collect::<Vec<_>>();
         utf16.push(0);
         let byte_len = utf16.len() * size_of::<u16>();
@@ -473,69 +500,6 @@ mod platform {
         Ok(())
     }
 
-    fn restore_clipboard_text(text: Option<String>) -> Result<(), OrallyError> {
-        match text {
-            Some(text) => set_clipboard_text(&text),
-            None => clear_clipboard(),
-        }
-    }
-
-    fn clear_clipboard() -> Result<(), OrallyError> {
-        unsafe {
-            if OpenClipboard(null_mut()) == 0 {
-                return Err(OrallyError::Insertion(
-                    "OpenClipboard failed while clearing clipboard".to_string(),
-                ));
-            }
-
-            let _guard = ClipboardGuard;
-            if EmptyClipboard() == 0 {
-                return Err(OrallyError::Insertion("EmptyClipboard failed".to_string()));
-            }
-        }
-
-        Ok(())
-    }
-
-    fn clipboard_text() -> Result<Option<String>, OrallyError> {
-        unsafe {
-            if IsClipboardFormatAvailable(u32::from(CF_UNICODETEXT)) == 0 {
-                return Ok(None);
-            }
-
-            if OpenClipboard(null_mut()) == 0 {
-                return Err(OrallyError::Insertion(
-                    "OpenClipboard failed while reading clipboard".to_string(),
-                ));
-            }
-
-            let _guard = ClipboardGuard;
-            let handle = GetClipboardData(u32::from(CF_UNICODETEXT));
-            if handle.is_null() {
-                return Ok(None);
-            }
-
-            let locked = GlobalLock(handle);
-            if locked.is_null() {
-                return Err(OrallyError::Insertion(
-                    "GlobalLock failed while reading clipboard".to_string(),
-                ));
-            }
-
-            let byte_len = GlobalSize(handle);
-            let u16_len = byte_len / size_of::<u16>();
-            let data = slice::from_raw_parts(locked.cast::<u16>(), u16_len);
-            let nul = data
-                .iter()
-                .position(|value| *value == 0)
-                .unwrap_or(data.len());
-            let text = String::from_utf16_lossy(&data[..nul]);
-            GlobalUnlock(handle);
-
-            Ok(Some(text))
-        }
-    }
-
     fn send_ctrl_v() -> Result<(), OrallyError> {
         let inputs = [
             keyboard_input(VK_CONTROL, 0),
@@ -543,16 +507,18 @@ mod platform {
             keyboard_input(VK_V, KEYEVENTF_KEYUP),
             keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP),
         ];
+        send_inputs(&inputs)
+    }
 
-        let sent = unsafe {
-            SendInput(
-                inputs.len() as u32,
-                inputs.as_ptr(),
-                size_of::<INPUT>() as i32,
-            )
-        };
+    fn send_inputs(inputs: &[INPUT]) -> Result<(), OrallyError> {
+        if inputs.is_empty() {
+            return Ok(());
+        }
+        let count = u32::try_from(inputs.len())
+            .map_err(|_| OrallyError::Insertion("Text is too long to insert".to_string()))?;
+        let sent = unsafe { SendInput(count, inputs.as_ptr(), size_of::<INPUT>() as i32) };
 
-        if sent != inputs.len() as u32 {
+        if sent != count {
             return Err(OrallyError::Insertion(format!(
                 "SendInput sent {sent} of {} keyboard events",
                 inputs.len()
@@ -618,19 +584,71 @@ mod platform {
     fn key_is_down(vk: i32) -> bool {
         unsafe { GetAsyncKeyState(vk) < 0 }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn events(text: &str) -> Vec<(u16, u16, u32)> {
+            text_inputs(text)
+                .unwrap()
+                .iter()
+                .map(|input| unsafe {
+                    let key = input.Anonymous.ki;
+                    (key.wVk, key.wScan, key.dwFlags)
+                })
+                .collect()
+        }
+
+        #[test]
+        fn unicode_input_preserves_chinese_and_both_surrogates_on_press_and_release() {
+            let expected = "A你好😀"
+                .encode_utf16()
+                .flat_map(|unit| {
+                    [
+                        (0, unit, KEYEVENTF_UNICODE),
+                        (0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(events("A你好😀"), expected);
+        }
+
+        #[test]
+        fn line_endings_and_tabs_produce_one_key_click_without_duplicate_characters() {
+            let expected = [VK_RETURN, VK_RETURN, VK_RETURN, VK_TAB]
+                .into_iter()
+                .flat_map(|key| [(key, 0, 0), (key, 0, KEYEVENTF_KEYUP)])
+                .collect::<Vec<_>>();
+            assert_eq!(events("\r\n\n\r\t"), expected);
+        }
+
+        #[test]
+        fn empty_text_has_no_events_and_null_text_is_rejected_before_injection() {
+            assert!(events("").is_empty());
+            assert!(text_inputs("valid prefix\0suffix").is_err());
+        }
+    }
 }
 
 #[cfg(not(windows))]
 mod platform {
     use super::{Hotkey, HotkeyEvent};
     use orally_core::OrallyError;
-    use std::time::Duration;
 
-    pub fn paste_text(
-        _text: &str,
-        _restore_clipboard: bool,
-        _restore_delay: Duration,
-    ) -> Result<(), OrallyError> {
+    pub fn type_text(_text: &str) -> Result<(), OrallyError> {
+        Err(OrallyError::Insertion(
+            "Windows direct text insertion is only available on Windows".to_string(),
+        ))
+    }
+
+    pub fn set_clipboard_text(_text: &str) -> Result<(), OrallyError> {
+        Err(OrallyError::Insertion(
+            "Windows clipboard copy is only available on Windows".to_string(),
+        ))
+    }
+
+    pub fn paste_text(_text: &str) -> Result<(), OrallyError> {
         Err(OrallyError::Insertion(
             "Windows clipboard paste insertion is only available on Windows".to_string(),
         ))

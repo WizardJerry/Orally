@@ -4,25 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Orally Dictation</title>
-    <link rel="stylesheet" href="./overlay.css" />
   </head>
   <body>
-    <main class="dictation-pill" data-recording="true" aria-label="Orally 语音输入状态">
-      <div class="overlay-header">
-        <div class="overlay-status">
-          <span class="recording-dot" aria-hidden="true"></span>
-          <strong id="title" role="status" aria-live="polite">正在录音…</strong>
-        </div>
-        <span class="overlay-brand">Orally</span>
-        <button id="stop" type="button" aria-label="停止语音输入" title="停止语音输入">
-          <svg viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><rect x="2" y="2" width="8" height="8" rx="1" /></svg>
-        </button>
-      </div>
-      <div class="overlay-bottom">
-        <div id="meter" class="volume-meter is-silent" aria-hidden="true"></div>
-        <p id="detail" class="sr-only" role="status" aria-live="polite">按快捷键或点击停止</p>
-      </div>
-    </main>
-    <script src="./overlay.js" type="module"></script>
+    <div id="root"></div>
+    <script src="./overlay.jsx" type="module"></script>
   </body>
 </html>

@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod config_sync;
+mod diagnostics;
 mod hotkey;
 mod service_test;
 mod test_recording;
@@ -13,7 +15,7 @@ use orally_speech::{
     SpeechProcessor,
 };
 use orally_storage::{default_history_path, HistoryEntry, HistoryStore};
-use orally_windows::{Hotkey, WindowsClipboardPasteInserter, WindowsPasteConfig};
+use orally_windows::{Hotkey, WindowsOutputConfig, WindowsTextInserter};
 use serde::Serialize;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -145,8 +147,22 @@ impl DictationLevel {
 }
 
 #[tauri::command]
-fn get_config() -> Result<AppConfig, String> {
-    tray::with_config_lock(|| orally_config::load_or_default().map_err(|error| error.to_string()))
+fn get_config(app: AppHandle) -> Result<AppConfig, String> {
+    let config = tray::with_config_lock(|| {
+        orally_config::load_or_default().map_err(|error| error.to_string())
+    })?;
+    apply_theme(&app, config.appearance.dark_mode);
+    Ok(config)
+}
+
+fn apply_theme(app: &AppHandle, dark_mode: bool) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_theme(Some(if dark_mode {
+            tauri::Theme::Dark
+        } else {
+            tauri::Theme::Light
+        }));
+    }
 }
 
 #[tauri::command]
@@ -155,14 +171,28 @@ fn parse_config_document(content: String) -> Result<AppConfig, String> {
 }
 
 #[tauri::command]
-fn save_config(
+fn save_config(app: AppHandle, config: AppConfig) -> Result<AppConfig, String> {
+    let saved = tray::with_config_lock(|| {
+        let path = orally_config::config_path().map_err(|error| error.to_string())?;
+        orally_config::ConfigStore::new(path.parent().ok_or("无法确定配置目录")?)
+            .save_profiles(&config)
+            .map_err(|error| error.to_string())
+    })?;
+    tray::refresh_menu_or_notify(&app);
+    Ok(saved)
+}
+
+#[tauri::command]
+fn save_settings(
     app: AppHandle,
     state: State<'_, hotkey::HotkeyController>,
-    config: AppConfig,
-) -> Result<(), String> {
-    state.save(config)?;
-    tray::refresh_menu_or_notify(&app);
-    Ok(())
+    settings: orally_config::AppSettings,
+    base: orally_config::AppSettings,
+) -> Result<orally_config::AppSettings, String> {
+    let saved = state.save_settings(settings, base)?;
+    apply_theme(&app, saved.appearance.dark_mode);
+    diagnostics::apply(&saved.logging);
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -206,6 +236,7 @@ fn start_dictation_service(
     let hotkey_sender = sender.clone();
     let hotkey_app = app.clone();
     let update_sender = sender.clone();
+    let sync_app = app.clone();
     let hotkey_controller = hotkey::HotkeyController::new(
         load_hotkey(),
         move || {
@@ -221,6 +252,15 @@ fn start_dictation_service(
                 &error,
                 Duration::from_secs(6),
             );
+        },
+        move |result| match result {
+            Ok(()) => {
+                tray::refresh_menu_or_notify(&sync_app);
+                let _ = sync_app.emit("config-changed", ());
+            }
+            Err(error) => {
+                let _ = sync_app.emit("config-sync-error", error);
+            }
         },
     );
     let current_hotkey = hotkey_controller.current();
@@ -372,12 +412,11 @@ fn finish_dictation(app: &AppHandle, active: ActiveRecording) -> Result<(), Oral
     let final_text = outcome.final_text;
 
     restore_foreground_window(active.target);
-    let inserter = WindowsClipboardPasteInserter::new(WindowsPasteConfig {
-        paste_delay: Duration::from_millis(config.output.paste_delay_ms),
-        restore_clipboard: config.output.restore_clipboard,
-        restore_clipboard_delay: Duration::from_millis(config.output.restore_clipboard_delay_ms),
+    let inserter = WindowsTextInserter::new(WindowsOutputConfig {
+        direct_output: config.output.direct_output,
+        auto_copy: config.output.auto_copy,
     });
-    inserter.insert(&final_text, InsertMode::ClipboardFallback)?;
+    inserter.insert(&final_text, InsertMode::Direct)?;
 
     if let Err(error) = save_history(&config, raw_text, final_text) {
         show_transient_overlay(
@@ -414,9 +453,7 @@ fn build_speech_plan(config: &AppConfig) -> SpeechPlan {
 }
 
 fn build_refinement_plan(config: &AppConfig) -> RefinementPlan {
-    if config.output.raw {
-        RefinementPlan::Raw
-    } else if matches!(config.postprocess.mode.as_str(), "llm" | "ai") {
+    if matches!(config.postprocess.mode.as_str(), "llm" | "ai") {
         if config.postprocess.models.is_empty() {
             RefinementPlan::AiPostprocessing(AiPostprocessPlan {
                 base_url: config.postprocess.base_url.clone(),
@@ -636,6 +673,7 @@ fn restore_foreground_window(_target: Option<ForegroundWindow>) {}
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
+            diagnostics::start();
             let recording_gate = Arc::new(test_recording::RecordingGate::default());
             app.manage(test_recording::TestRecordingController::new(
                 recording_gate.clone(),
@@ -684,6 +722,7 @@ fn main() {
             test_recording::stop_test_recording,
             test_recording::cancel_test_recording,
             save_config,
+            save_settings,
             hotkey::set_hotkey_capture,
             stop_recording,
             replay_dictation_status
@@ -966,15 +1005,9 @@ mod tests {
     }
 
     #[test]
-    fn raw_output_takes_precedence_and_local_mode_does_not_run_models() {
+    fn local_mode_does_not_run_models() {
         let mut config = AppConfig::default();
-        config.postprocess.mode = "llm".to_string();
         config.postprocess.models = vec![PostprocessModelConfig::default()];
-        config.output.raw = true;
-
-        assert_eq!(build_refinement_plan(&config), RefinementPlan::Raw);
-
-        config.output.raw = false;
         config.postprocess.mode = "builtin".to_string();
 
         assert_eq!(

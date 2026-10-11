@@ -89,13 +89,12 @@ test("a missing transcription endpoint negotiates WAV Data URL chat using the co
   Object.assign(editor.activeProfile.asr, {
     model: "unsaved-speech-model", api_key: "fake-draft-key",
   });
-  editor.config.output.raw = true;
   assert.equal(editor.dirty, true);
   const config = editor.snapshot();
   config.asr.prompt = "Deprecated recognition instructions must not be sent.";
   const before = structuredClone(config);
   await fakeFetch([json({ error: {} }, 404), completion("recognized from draft")], async (calls) => {
-    const result = await testConfigInput(config, { audioBytes: wav(), audioName: "draft.wav" });
+    const result = await testConfigInput(config, { audioBytes: wav(), audioName: "draft.wav", asrOnly: true });
     assert.equal(result.raw_transcript, "recognized from draft");
     assert.equal(result.final_text, "recognized from draft");
     assert.deepEqual(result.warnings, []);
@@ -119,9 +118,8 @@ test("Data URL shape rejection alone negotiates the standard raw WAV chat shape"
   for (const [missingStatus, shapeStatus] of [[404, 400], [405, 422]]) {
     const config = configuration();
     config.asr.prompt = "Deprecated recognition instructions must not be sent.";
-    config.output.raw = true;
     await fakeFetch([json({ error: {} }, missingStatus), json({ error: {} }, shapeStatus), completion("raw-shape transcript")], async (calls) => {
-      const result = await testConfigInput(config, { audioBytes: wav() });
+      const result = await testConfigInput(config, { audioBytes: wav(), asrOnly: true });
       assert.equal(result.final_text, "raw-shape transcript");
       assert.equal(calls.length, 3);
       assert.deepEqual(JSON.parse(calls[2].body), {
@@ -162,9 +160,8 @@ test("audio-only Data URL negotiation keeps silence valid without inventing a sy
 test("raw WAV compatibility uses a transcription instruction when the draft contains no context", async () => {
   const config = configuration();
   config.asr.language = null;
-  config.output.raw = true;
   await fakeFetch([json({ error: {} }, 404), json({ error: {} }, 422), completion("raw transcript")], async (calls) => {
-    assert.equal((await testConfigInput(config, { audioBytes: wav() })).final_text, "raw transcript");
+    assert.equal((await testConfigInput(config, { audioBytes: wav(), asrOnly: true })).final_text, "raw transcript");
     assert.equal(JSON.parse(calls[2].body).messages[0].content[0].text, "Please transcribe this audio exactly. Return only the transcript text.");
   });
 });
@@ -238,9 +235,8 @@ test("every ASR host, model and legacy protocol starts with standard multipart t
   ]) {
     const config = configuration();
     Object.assign(config.asr, { base_url: baseUrl, model, protocol: legacyProtocol });
-    config.output.raw = true;
     await fakeFetch([json({ text: "recognized" })], async (calls) => {
-      const result = await testConfigInput(config, { audioBytes: wav() });
+      const result = await testConfigInput(config, { audioBytes: wav(), asrOnly: true });
       assert.equal(result.final_text, "recognized");
       assert.equal(calls[0].url, `${baseUrl}/audio/transcriptions`);
       assert.ok(calls[0].body instanceof FormData);
@@ -372,7 +368,7 @@ test("text input bypasses ASR and explicit fallback produces a warning, while st
   });
 });
 
-test("privacy blocking prevents every external request but allows raw, local and empty-chain text tests", async () => {
+test("privacy blocking prevents every external request but allows local and empty-chain text tests", async () => {
   const config = configuration();
   config.privacy.allow_external_requests = false;
   await fakeFetch([], async () => {
@@ -380,9 +376,8 @@ test("privacy blocking prevents every external request but allows raw, local and
     await assert.rejects(testServiceConnection(config, config.postprocess.models[0].id), /隐私/);
     await assert.rejects(testConfigInput(config, { inputText: "input" }), /隐私/);
     await assert.rejects(testConfigInput(config, { audioBytes: wav() }), /隐私/);
-    config.output.raw = true;
-    assert.equal((await testConfigInput(config, { inputText: " raw text " })).final_text, " raw text ");
-    config.output.raw = false;
+    await assert.rejects(testConfigInput(config, { audioBytes: wav(), asrOnly: true }), /隐私/);
+    await assert.rejects(testConfigInput(config, { inputText: "input", asrOnly: true }), /隐私/);
     config.postprocess.mode = "builtin";
     assert.equal((await testConfigInput(config, { inputText: "嗯 orally" })).final_text, "Orally。");
     config.postprocess.mode = "llm";

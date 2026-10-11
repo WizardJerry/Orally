@@ -1,4 +1,5 @@
 use orally_core::{OrallyError, ProcessInput, ProcessedText, TextProcessor};
+use orally_diagnostics::{HttpTrace, Protocol};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -71,26 +72,30 @@ impl TextProcessor for OpenAiChatPostprocessor {
             stream: false,
         };
 
-        let response = self
+        let request = self
             .client
             .post(self.config.endpoint())
             .bearer_auth(&self.config.api_key)
             .json(&request)
-            .send()
+            .build()
+            .map_err(|error| OrallyError::Processing(error.to_string()))?;
+        let mut trace = HttpTrace::new(Protocol::ChatText);
+        let response = trace
+            .send(&self.client, request)
             .map_err(|error| OrallyError::Processing(error.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
-            let body = response
-                .text()
+            let body = trace
+                .error_text(response)
                 .unwrap_or_else(|_| "<failed to read error body>".to_string());
             return Err(OrallyError::Processing(format!(
                 "postprocessor returned HTTP {status}: {body}"
             )));
         }
 
-        let body = response
-            .json::<ChatCompletionResponse>()
+        let body = trace
+            .json::<ChatCompletionResponse>(response)
             .map_err(|error| OrallyError::Processing(error.to_string()))?;
         let text = body
             .choices
@@ -105,6 +110,7 @@ impl TextProcessor for OpenAiChatPostprocessor {
             ));
         }
 
+        trace.success();
         Ok(ProcessedText {
             text,
             changes: vec!["processed by AI postprocessor".to_string()],

@@ -117,6 +117,12 @@ impl CpalRecordingSession {
         let mut metrics = analyze_pcm16(&audio, VoiceActivityConfig::default())?;
         metrics.duration_ms = elapsed.as_millis().min(u128::from(u64::MAX)) as u64;
 
+        orally_diagnostics::recording(
+            metrics.duration_ms,
+            audio.bytes.len(),
+            audio.sample_rate_hz,
+            audio.channels,
+        );
         Ok(RecordedAudio { audio, metrics })
     }
 

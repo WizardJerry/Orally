@@ -251,7 +251,6 @@ function activeModels(config) {
 async function refine(config, rawText, signal) {
   checkCancelled(signal);
   const locale = config.output?.locale ?? "zh-CN";
-  if (config.output?.raw) return { text: rawText, warnings: [] };
   if (!["llm", "ai"].includes(config.postprocess?.mode)) return { text: localCleanup(rawText, locale), warnings: [] };
   const models = activeModels(config);
   if (models.length) allowExternalRequests(config);
@@ -297,7 +296,7 @@ export async function testServiceConnection(config, modelId = null, { signal = n
   });
 }
 
-export async function testConfigInput(config, { inputText = null, audioBytes: suppliedAudio = null, audioName = null, signal = null } = {}) {
+export async function testConfigInput(config, { inputText = null, audioBytes: suppliedAudio = null, audioName = null, asrOnly = false, signal = null } = {}) {
   return safely(config, async () => {
     const started = now();
     checkCancelled(signal);
@@ -311,7 +310,9 @@ export async function testConfigInput(config, { inputText = null, audioBytes: su
       if (inputText.length > MAX_TEXT_LENGTH) throw new Error("测试文字不能超过 100,000 个字符");
       rawText = inputText;
     }
-    const result = await refine(config, rawText, signal);
+    const result = asrOnly && suppliedAudio !== null
+      ? { text: rawText, warnings: [] }
+      : await refine(config, rawText, signal);
     return { raw_transcript: rawText, final_text: result.text, elapsed_ms: Math.round(now() - started), warnings: result.warnings };
   });
 }

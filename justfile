@@ -19,7 +19,7 @@ dev: _ensure-deps
 dev-ui: _ensure-deps
     npm.cmd run ui:dev
 
-# Build the release desktop app and prepare dist/portable/Orally.
+# Build the React frontend and release desktop app, then prepare dist/portable/Orally.
 build:
     powershell.exe -NoLogo -NoProfile -File scripts/package-portable.ps1
 
@@ -44,4 +44,4 @@ fmt:
 [private]
 [working-directory("apps/orally-desktop")]
 _ensure-deps:
-    @if (!(Test-Path 'node_modules/.bin/tauri.cmd') -or !(Test-Path 'node_modules/.bin/vite.cmd')) { npm.cmd ci --include=dev --prefer-offline --no-audit --no-fund; exit $LASTEXITCODE }
+    @if (!(Test-Path 'node_modules/.bin/tauri.cmd') -or !(Test-Path 'node_modules/.bin/vite.cmd') -or !(Test-Path 'node_modules/react/package.json') -or !(Test-Path 'node_modules/@tailwindcss/vite/package.json') -or !(Test-Path 'node_modules/@vitejs/plugin-react/package.json')) { npm.cmd ci --include=dev --prefer-offline --no-audit --no-fund; exit $LASTEXITCODE }

@@ -5,14 +5,16 @@
   "identifier": "dev.orally.app",
   "build": {
     "beforeDevCommand": "npm run ui:dev",
+    "beforeBuildCommand": "npm run ui:build",
     "devUrl": "http://localhost:1420",
-    "frontendDist": "../ui"
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
+        "theme": "Dark",
         "title": "Orally Settings",
         "width": 1040,
         "height": 720,

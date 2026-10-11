@@ -4,7 +4,7 @@
 
 Orally 是一个可实际工作的 AI 辅助语音输入早期原型，也是一个面向学习的 Rust 重构项目。
 
-当前可用的功能链路可以录制或接收音频，将其发送至兼容 OpenAI 的语音识别提供方，在本地或通过 AI Post-processing（AI 后处理）优化转写文本，并生成可直接粘贴的文本。Windows Desktop App（Windows 桌面应用）还提供 Toggle Mode、托盘控制、浮层提示和剪贴板插入功能。
+当前可用的功能链路可以录制或接收音频，将其发送至兼容 OpenAI 的语音识别提供方，在本地或通过 AI Post-processing（AI 后处理）优化转写文本，并生成可直接粘贴的文本。Windows Desktop App（Windows 桌面应用）还提供 Toggle Mode、托盘控制、浮层提示和 Unicode 直接输入功能。
 
 ## 开发方式
 
@@ -20,7 +20,7 @@ Orally 是一个可实际工作的 AI 辅助语音输入早期原型，也是一
 just dev
 ```
 
-此命令在缺少 Tauri 或 Vite 时通过 `npm ci` 安装前端开发依赖，然后通过 `tauri dev` 启动 Desktop App。Tauri 会在 `http://localhost:1420` 启动 Vite，前端修改支持热更新，Rust 修改会触发应用重新编译。后续启动复用已安装的依赖；修改 `package.json` 或 `package-lock.json` 后，运行 `just setup` 刷新依赖。首次 Rust 编译可能较慢。在终端按 `Ctrl+C` 可停止开发进程。
+此命令在缺少 Tauri、Vite、React 或 Vite 的 React/Tailwind 集成时，通过 `npm ci --include=dev` 安装锁定的前端依赖，然后通过 `tauri dev` 启动 Desktop App。Tauri 会在 `http://localhost:1420` 启动 Vite，前端修改支持热更新，Rust 修改会触发应用重新编译。后续启动复用已安装的依赖；修改 `package.json` 或 `package-lock.json` 后，运行 `just setup` 刷新依赖。首次 Rust 编译可能较慢。在终端按 `Ctrl+C` 可停止开发进程。
 
 运行 `just` 或 `just --list` 查看命令：
 
@@ -35,6 +35,20 @@ just dev
 | `just check` | 检查 Rust 格式和编译 |
 | `just fmt` | 格式化 Rust workspace |
 
+前端采用 React、Tailwind CSS 4 和官方 shadcn/ui `new-york` Radix 组件，使用统一黑白
+主题。可维护的 JSX 组件源码位于 `apps/orally-desktop/ui/components/ui`。
+
+在仓库根目录运行前端检查，并预览生产构建：
+
+```powershell
+npm.cmd --prefix apps/orally-desktop run ui:test
+npm.cmd --prefix apps/orally-desktop run ui:build
+npm.cmd --prefix apps/orally-desktop run ui:preview
+```
+
+`ui:build` 将主页面和录音浮窗构建到 `apps/orally-desktop/dist`。`ui:preview` 在
+`http://localhost:4173` 预览构建结果；`just dev-ui` 在 1420 端口提供开发界面。
+
 ## 当前原型
 
 此仓库目前包含：
@@ -43,7 +57,7 @@ just dev
 - `crates/orally-audio`：跨平台麦克风采集、PCM16 指标和 WAV 编码。
 - `crates/orally-speech`：从音频到 Final Text（最终文本）的共享编排，包括 ASR 适配器选择以及 Raw、本地或 AI 优化。
 - `apps/orally-cli`：面向开发者的工具，用于演示、录音、转写、文本处理、听写、热键监听和配置。
-- `apps/orally-desktop`：Tauri 桌面外壳，包含 Windows 托盘图标，以及由本地 TOML 配置驱动的 Material 风格设置界面。
+- `apps/orally-desktop`：Tauri 桌面外壳，包含 Windows 托盘图标，以及由本地 TOML 配置驱动的 React/shadcn 设置界面。
 - `docs/product`：产品定义、架构说明、隐私模型、路线图以及未来的产品 Grilling 说明。
 - `docs/engineering`：供人阅读的实现与平台说明。
 - `.agents`：仅供 agent 使用的设置、skill 和工具上下文。
@@ -56,21 +70,20 @@ cargo run -p orally-cli -- process "嗯 今天 我想 写 一封 邮件 给 visu
 cargo run -p orally-cli -- record --seconds 3 --output orally-recording.wav
 cargo run -p orally-cli -- transcribe --file orally-recording.wav --model <model>
 cargo run -p orally-cli -- dictate --seconds 3 --model <model>
-cargo run -p orally-cli -- transcribe --file orally-recording.wav --raw
-cargo run -p orally-cli -- dictate --seconds 3 --show-changes
-cargo run -p orally-cli -- dictate --seconds 3 --insert --paste-delay-ms 1200
-cargo run -p orally-cli -- listen --paste-delay-ms 300
+cargo run -p orally-cli -- transcribe --file orally-recording.wav
+cargo run -p orally-cli -- dictate --seconds 3
+cargo run -p orally-cli -- dictate --seconds 3 --insert
+cargo run -p orally-cli -- listen
 cargo run -p orally-cli -- config init --provider openai-compatible
-cargo run -p orally-cli -- config set output.paste_delay_ms 300
 cargo run -p orally-cli -- config show
-cargo run -p orally-desktop
+just dev
 ```
 
 `record` 命令从默认麦克风采集音频，并写入 PCM16 WAV 文件。`transcribe` 将已有 WAV 文件发送至已配置的 ASR 提供方。`dictate` 则在一个步骤中完成麦克风录音并将采集到的音频发送至 ASR。
 
-默认情况下，远程 ASR 输出会经过 Orally 内置的后处理流水线。使用 `--raw` 可直接输出提供方返回的转写文本而不做后处理，使用 `--show-changes` 可显示本地清理操作。
+CLI 语音命令的远程 ASR 输出会经过 Orally 内置的后处理流水线。
 
-在 Windows 上，使用 `--insert` 可将最终文本粘贴到当前获得焦点的输入框。CLI 会先等待 `--paste-delay-ms` 指定的时长再粘贴，以便你在录音或转写完成后将焦点切换到目标应用。
+在 Windows 上，使用 `--insert` 会在处理完成后立即将最终文本输出到当前获得焦点的输入框。
 
 在 Windows 上使用 `listen` 可让 Orally 持续运行，并通过 `Ctrl+Alt+Space` 触发听写。按一次开始录音，再按一次相同热键即可停止录音、转写、后处理并粘贴。在终端中按 `Ctrl+C` 可停止监听器。
 
@@ -94,12 +107,27 @@ ASR 默认使用 `auto`：先尝试 multipart `/audio/transcriptions`，收到 H
 `--protocol openai-transcriptions` 或 `--protocol chat-audio`。LLM 后处理使用文本
 `/chat/completions`；两者可以共用地址和 API Key，但 LLM 成功不能验证语音模型。
 
+## 诊断日志
+
+桌面端会在可执行文件旁创建 `logs/orally-YYYY-MM-DD.jsonl`。默认开启最高详细度
+DEBUG 元信息日志，包含 HTTP 尝试编号、协议、状态码、耗时、字节数信息，以及录音
+时长、采样率、声道数。不保存正文、转录文字、提示词、请求头、凭据或配置的 URL。
+响应大小在可获得时记录，不属于网络抓包。
+
+在「设置 → 诊断日志」中配置自动清理：默认只保留本机日期的当天日志，也可选择
+3、7、30 天或关闭清理，持续保留每日文件。启动、写入和空闲时每 30 秒检查过期
+文件；同一天重启会继续追加当天日志。设置保存在 `setting.toml` 的
+`logging.auto_cleanup = true` 和 `logging.retention_days = 1`（正整数天数）。
+此清理策略独立于现有会存储文字内容的 `history.jsonl`。
+
 ## 配置
 
-Orally 统一读写可执行文件旁的 `config.toml`。若该文件不存在，会依次检查旧
-`ORALLY_CONFIG`、`%APPDATA%\Orally\config.toml` 和 `$HOME/.config/orally/config.toml`
-并复制已有配置。迁移保留原文件，不覆盖已有同目录配置；旧文件无法读取或解析时明确
-报错，不静默重置设置。
+Orally 将应用设置保存在可执行文件旁的 `setting.toml`，每套模型配置单独保存在
+`profiles/*.toml`。首次启动时迁移同目录的旧 `config.toml`，或原 `ORALLY_CONFIG`、
+`%APPDATA%\Orally\config.toml`、`$HOME/.config/orally/config.toml` 中的配置。
+迁移保留原文件，不覆盖已有的新格式设置；文件无法读取或解析时明确报错，不静默重置。
+应用设置修改后自动保存并生效。外部文件更改经过连续两次一致读取后自动同步，通常在
+一秒内完成；文件暂时无效时提示错误并重试。模型配置仍点击保存，未保存的模型草稿会保留。
 
 初始化提供方预设：
 
@@ -126,9 +154,8 @@ cargo run -p orally-cli -- config set asr.api_key_env ORALLY_OPENAI_COMPAT_API_K
 cargo run -p orally-cli -- config set postprocess.mode llm
 cargo run -p orally-cli -- config set postprocess.model gpt-4o-mini
 cargo run -p orally-cli -- config set postprocess.fallback_to_builtin true
-cargo run -p orally-cli -- config set output.paste_delay_ms 300
-cargo run -p orally-cli -- config set output.restore_clipboard true
-cargo run -p orally-cli -- config set output.show_changes true
+cargo run -p orally-cli -- config set output.direct_output true
+cargo run -p orally-cli -- config set output.auto_copy false
 ```
 
 当前支持直接设置 `asr.api_key` 和 `postprocess.api_key`，但这些值会以明文保存。通过
@@ -152,12 +179,9 @@ cargo run -p orally-cli -- config set output.show_changes true
 - `postprocess.user_template`
 - `postprocess.fallback_to_builtin`
 - `output.locale`
-- `output.raw`
-- `output.show_changes`
 - `output.insert`
-- `output.paste_delay_ms`
-- `output.restore_clipboard`
-- `output.restore_clipboard_delay_ms`
+- `output.direct_output`
+- `output.auto_copy`
 - `audio.dictate_seconds`
 - `audio.record_output`
 - `audio.input_mode`
@@ -177,14 +201,14 @@ cargo run -p orally-cli -- config set output.show_changes true
 $env:ORALLY_OPENAI_COMPAT_API_KEY="..."
 ```
 
-如果希望桌面应用在未预先设置环境变量的情况下运行，本地配置也可以保存 `asr.api_key`。该值会写入 `config.toml`，因此只应在你信任的机器上使用。
+如果希望桌面应用在未预先设置环境变量的情况下运行，本地配置也可以保存 `asr.api_key`。该值会写入对应的 `profiles/*.toml`，因此只应在你信任的机器上使用。
 
 ## 桌面设置应用
 
 运行当前桌面设置外壳：
 
 ```powershell
-cargo run -p orally-desktop
+just dev
 ```
 
 该应用使用 Tauri v2，并在设置窗口打开或隐藏时保持托盘图标运行。左键单击托盘图标，或选择 `Open Settings`，即可重新显示窗口。
@@ -201,20 +225,19 @@ cargo run -p orally-desktop
 列出所有已保存配置，当前配置前有圆点。点击即可立即启用，并同步设置窗口的选择，同时
 保留未保存草稿。保存新配置或名称后，菜单会自动刷新。
 
-在设置页点击听写快捷键后，直接按下需要的组合，按 Esc 可取消。保存时立即注册新组合，
+在设置页点击听写快捷键后，直接按下需要的组合，按 Esc 可取消。完成录入后自动保存并注册，
 注册冲突或保存失败会保留旧绑定。录入期间临时释放旧热键，结束录入后恢复。快捷键设置
-只保留开始/停止听写；设置窗口内的 `Ctrl+S` 继续作为固定保存操作。
+只保留开始/停止听写；模型配置页内的 `Ctrl+S` 保存模型配置，应用设置无需手动保存。
 
 设置界面可以编辑：
 
 - OpenAI 兼容语音服务的地址、模型和 API Key。
 - AI 后处理模式及有序的 OpenAI 兼容模型和 Prompt 节点。
-- 全局快捷键、粘贴延迟、Raw Transcript（原始转写文本）模式和剪贴板恢复。
-- CLI 语音命令使用的共享 `output.insert` 与 `output.show_changes` 设置。Desktop 当前始终
-  插入 Final Text（最终文本），且不显示处理变更列表。
+- 全局快捷键、直接输出与输出自动复制。
 - 外部请求隐私开关和本地历史记录。
+- 最后一栏“其他”提供“深色模式”复选框，默认开启，取消勾选使用浅色模式。
 
-保存操作统一写入可执行文件旁的 `config.toml`，桌面端与 CLI 放在同一目录时共用此文件。
+桌面端与 CLI 放在同一目录时共用该目录下的 `setting.toml` 和 `profiles/`。
 设置页不再展示输出语言与配置路径控件，已有 locale 值仍保留。将 API Key 字段留空即可
 仅使用环境变量引用。
 
@@ -264,8 +287,6 @@ api_key_env = "ORALLY_OPENAI_COMPAT_API_KEY"
 
 在桌面流程中，AI 后处理器会把 ASR 转写文本发送到兼容 OpenAI 的 `/chat/completions` 端点，并期望响应中只包含最终文本。使用 `postprocess.system_prompt` 和 `postprocess.user_template` 可自定义清理行为。user template 支持 `{{transcript}}` 和 `{{locale}}`。
 
-设置 `output.raw = true` 可绕过内置后处理和 AI 后处理。
-
 如果 `postprocess.fallback_to_builtin = true`，桌面端 AI 处理器返回错误时，会回退到 Orally 的本地清理器。缺少 AI 凭据或处理器构造错误目前会在进入该回退前失败。CLI 语音命令会忽略 `postprocess.mode`；`process --ai` 是一个独立的开发者命令，不使用此回退设置。
 
 ## JSONL 历史记录原型与剪贴板隐私
@@ -278,11 +299,16 @@ JSONL 历史记录追加到当前配置文件旁的 `history.jsonl` 中。每条
 
 在桌面流程中，设置 `privacy.allow_external_requests = false` 可阻止远程 ASR 和 AI 后处理请求。CLI 网络命令目前不会执行此设置。
 
-在 Windows 上，Orally 使用剪贴板回退插入路径。当 `output.restore_clipboard = true` 时，Orally 会在粘贴后恢复剪贴板中原有的文本，并从剪贴板移除生成文本。此初始实现会保留剪贴板中原有的文本内容；尚不能恢复非文本剪贴板格式。
+在 Windows 上，Orally 默认开启 `output.direct_output = true`，通过 Unicode 输入事件将最终文本
+写入当前输入框，不访问剪贴板。`output.auto_copy` 默认关闭，开启后会在直接输出完成时同时复制结果。
+关闭直接输出则使用剪贴板粘贴，并将结果保留在剪贴板中；此时“输出自动复制”显示开启且不可调，
+重新开启直接输出后恢复之前的复制偏好。桌面端和 CLI 插入路径共用这些设置，旧配置缺少新字段时
+也采用上述默认值。旧配置中的原始转写、处理变更、输出延迟和剪贴板恢复设置会被忽略，
+下次保存设置时不再写出。
 
 ## 可执行文件本地化的 Windows 原型
 
-Orally 无需注册为 Windows 输入法，`config.toml` 始终位于可执行文件旁，包括首次保存。
+Orally 无需注册为 Windows 输入法，`setting.toml` 和 `profiles/` 始终位于可执行文件旁。
 旧路径仅作为迁移来源；程序目录不可写时会明确报错，不改用其他目录保存。
 
 这是一个配置本地化原型，不是延期产品设计中定义的完整 Portable Installation 合约。
@@ -293,14 +319,18 @@ Orally 无需注册为 Windows 输入法，`config.toml` 始终位于可执行�
 just build
 ```
 
-该命令编译内嵌界面的优化版 Release 可执行文件，运行时无需 Vite 开发服务器。
-编译失败时会立即停止打包。
+此命令先通过 `npm ci --include=dev` 安装锁定的前端依赖，运行 `ui:build`，再编译内嵌
+两个界面页面的优化 Release 可执行文件。打包后的应用无需开发服务器。依赖安装、前端
+构建或 Rust 编译失败时，停止打包。
 
 该脚本会写入：
 
 ```text
 dist\portable\Orally\Orally.exe
-dist\portable\Orally\config.toml
+dist\portable\Orally\setting.toml
+dist\portable\Orally\profiles\default.toml
+dist\portable\Orally\setting.example.toml
+dist\portable\Orally\profile.example.toml
 dist\portable\Orally\config.example.toml
 ```
 
@@ -310,7 +340,41 @@ dist\portable\Orally\config.example.toml
 cargo run -p orally-cli -- config init --provider openai-compatible --portable
 ```
 
-打包脚本不会覆盖已有的 `config.toml`；它始终会写入最新的 `config.example.toml` 作为参考。
+打包脚本保留已有设置、模型配置和旧 `config.toml`，只更新示例文档（包括旧格式导入示例）。
+旧格式安装会在首次启动时迁移。
+
+## 自动发布
+
+[release](.github/workflows/release.yml) 会在推送 `v0.1.0` 这样的
+版本 tag 时，自动构建并发布 Windows x64 portable ZIP。tag 必须使用
+`vMAJOR.MINOR.PATCH` 格式，且指向远端 `main` 历史中的提交；工作流在构建前验证。
+普通分支推送不触发发布。请先将工作流合入 `main`，再打版本 tag。
+
+将需要发布的改动合入并推送到 `main` 后，执行：
+
+```powershell
+git switch main
+git pull --ff-only origin main
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
+
+每次发布使用新的版本 tag，支持附注 tag 和轻量 tag。即使 `main` 后续继续更新，
+工作流也只构建该 tag 指向的提交。
+
+工作流复用现有打包脚本，运行前端和 Rust workspace 测试，并使用推送的 tag 创建
+Release（例如 `Orally v0.1.0`）。最近一次发布标记为 **Latest**。
+每个 Release 包含 `Orally-<tag>-windows-x64-portable.zip` 及其 SHA-256
+校验文件，不构建安装包或 CLI。重跑失败的工作流会继续处理对应的 Release 草稿；
+已经发布的 Release 保持不变。
+应用内嵌版本仍由项目清单文件决定；需要更新应用版本时，请在打 tag 前修改这些文件。
+
+从 [Releases](https://github.com/WizardJerry/Orally/releases) 下载 ZIP，解压到可写
+目录后运行 `Orally/Orally.exe`。目标电脑需要 Microsoft Edge WebView2 Runtime。
+升级时请保留已有的 `setting.toml` 和 `profiles/`，不要用包内默认配置覆盖它们。
+
+无需添加自定义 Secret：仅发布任务通过内置 `GITHUB_TOKEN` 获得 `contents: write`
+权限。仓库或组织策略需要允许此权限以及工作流使用的 Actions。
 
 ## 方向
 

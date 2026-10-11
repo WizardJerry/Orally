@@ -15,15 +15,15 @@ const result = (text) => ({ raw_transcript: text, final_text: text, elapsed_ms: 
 test("recording captures the entire draft at start and stops only once", async () => {
   const phases = [];
   const session = new TestSession((state) => phases.push(state.phase));
-  const draft = { asr: { api_key: "fake-asr-key", model: "original" }, output: { raw: false }, models: ["first", "second"] };
+  const draft = { asr: { api_key: "fake-asr-key", model: "original" }, output: { auto_copy: false }, models: ["first", "second"] };
   let stops = 0;
   await session.startRecording(draft, async (captured) => ({
-    stop: async () => { stops += 1; return result(`${captured.asr.model}/${captured.models.join(",")}/${captured.output.raw}`); },
+    stop: async () => { stops += 1; return result(`${captured.asr.model}/${captured.models.join(",")}/${captured.output.auto_copy}`); },
     cancel: async () => {},
   }));
   draft.asr.model = "later edit";
   draft.models.reverse();
-  draft.output.raw = true;
+  draft.output.auto_copy = true;
   await Promise.all([session.stopRecording(), session.stopRecording()]);
   assert.equal(stops, 1);
   assert.equal(session.phase, "complete");

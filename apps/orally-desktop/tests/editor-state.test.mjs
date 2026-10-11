@@ -2,6 +2,29 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ConfigEditor, DEFAULT_CONFIG, clone, normalizeConfig } from "../ui/editor-state.js";
 
+test("older output settings adopt direct input without copying and explicit preferences survive reload", () => {
+  const legacy = clone(DEFAULT_CONFIG);
+  delete legacy.output.direct_output;
+  delete legacy.output.auto_copy;
+  const editor = new ConfigEditor(legacy);
+  assert.equal(editor.config.output.direct_output, true);
+  assert.equal(editor.config.output.auto_copy, false);
+  editor.config.output.direct_output = false;
+  editor.config.output.auto_copy = true;
+  const reloaded = new ConfigEditor(JSON.parse(JSON.stringify(editor.snapshot())));
+  assert.equal(reloaded.config.output.direct_output, false);
+  assert.equal(reloaded.config.output.auto_copy, true);
+});
+
+test("removed output settings are discarded when an older saved configuration is loaded", () => {
+  const legacy = clone(DEFAULT_CONFIG);
+  Object.assign(legacy.output, { raw: true, show_changes: true, paste_delay_ms: 4000, restore_clipboard: true, restore_clipboard_delay_ms: 500 });
+  const editor = new ConfigEditor(legacy);
+  const saved = editor.snapshot();
+  assert.deepEqual(saved.output, DEFAULT_CONFIG.output);
+  assert.deepEqual(new ConfigEditor(saved).snapshot().output, DEFAULT_CONFIG.output);
+});
+
 test("new configurations start with generic OpenAI-Compatible services and no stored credential", () => {
   const editor = new ConfigEditor();
   for (const profile of [editor.activeProfile, editor.newProfile()]) {
@@ -190,8 +213,8 @@ test("invalid import leaves every existing draft and selected profile untouched"
   assert.throws(() => editor.import({ profiles: {} }), /数组/);
   assert.throws(() => editor.import({ format: "orally-profile", version: 2, profile: {} }), /版本/);
   const invalidGlobal = clone(DEFAULT_CONFIG);
-  invalidGlobal.output.paste_delay_ms = -1;
-  assert.throws(() => editor.import(invalidGlobal), /paste_delay_ms/);
+  invalidGlobal.output.auto_copy = "invalid";
+  assert.throws(() => editor.import(invalidGlobal), /auto_copy/);
   assert.deepEqual(editor.snapshot(), before);
 });
 
@@ -296,7 +319,7 @@ test("a tray selection adopts the saved active profile while retaining dirty pro
   incoming.selectProfile(secondId);
   incoming.activeProfile.asr.model = "remote-saved-asr";
   incoming.config.privacy.history_enabled = false;
-  incoming.config.output.paste_delay_ms = 500;
+  incoming.config.output.auto_copy = true;
   const saved = incoming.snapshot();
   editor.acceptExternalSavedConfig(saved);
   assert.equal(editor.activeProfile.id, secondId);
@@ -306,7 +329,7 @@ test("a tray selection adopts the saved active profile while retaining dirty pro
   assert.equal(retained.asr.model, "local-unsaved-asr");
   assert.equal(editor.config.profiles.find((profile) => profile.id === newDraft.id).name, "Keep this unsaved draft");
   assert.equal(editor.config.output.locale, "en-US");
-  assert.equal(editor.config.output.paste_delay_ms, baseline.output.paste_delay_ms, "a locally edited global section remains a complete draft");
+  assert.equal(editor.config.output.auto_copy, baseline.output.auto_copy, "a locally edited global section remains a complete draft");
   assert.equal(editor.config.privacy.history_enabled, false, "unchanged sections accept saved updates");
   assert.deepEqual(editor.saved, saved);
   assert.equal(editor.profileDirty(firstId), true);

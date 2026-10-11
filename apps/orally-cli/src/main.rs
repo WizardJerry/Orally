@@ -12,7 +12,7 @@ use orally_speech::{
     AsrProtocol, CredentialSource, RecognitionPlan, RefinementPlan, SpeechOutcome, SpeechPlan,
     SpeechProcessor,
 };
-use orally_windows::{run_hotkey_loop, Hotkey, WindowsClipboardPasteInserter, WindowsPasteConfig};
+use orally_windows::{run_hotkey_loop, Hotkey, WindowsOutputConfig, WindowsTextInserter};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -340,33 +340,18 @@ fn print_recording_metrics(recorded: &RecordedAudio) {
 
 fn print_speech_outcome(outcome: SpeechOutcome, options: &OutputOptions) {
     let text = outcome.final_text;
-    let changes = outcome.changes;
 
     if options.insert {
-        eprintln!(
-            "Pasting in {} ms. Focus the target input field now...",
-            options.paste_delay_ms
-        );
-        let inserter = WindowsClipboardPasteInserter::new(WindowsPasteConfig {
-            paste_delay: std::time::Duration::from_millis(options.paste_delay_ms),
-            restore_clipboard: options.restore_clipboard,
-            restore_clipboard_delay: std::time::Duration::from_millis(
-                options.restore_clipboard_delay_ms,
-            ),
+        let inserter = WindowsTextInserter::new(WindowsOutputConfig {
+            direct_output: options.direct_output,
+            auto_copy: options.auto_copy,
         });
-        if let Err(error) = inserter.insert(&text, InsertMode::ClipboardFallback) {
+        if let Err(error) = inserter.insert(&text, InsertMode::Direct) {
             eprintln!("Insertion failed: {error}");
             std::process::exit(1);
         }
     } else {
         println!("{text}");
-    }
-
-    if options.show_changes && !changes.is_empty() {
-        println!("Changes:");
-        for change in changes {
-            println!("- {change}");
-        }
     }
 }
 
@@ -395,11 +380,7 @@ fn build_speech_processor(
             protocol: options.protocol,
             language: options.language.clone(),
         },
-        refinement: if output.raw {
-            RefinementPlan::Raw
-        } else {
-            RefinementPlan::LocalBasicCleanup
-        },
+        refinement: RefinementPlan::LocalBasicCleanup,
         locale: output.locale.clone(),
     })
     .map_err(|error| error.to_string())
@@ -423,7 +404,7 @@ fn run_process(args: &[String]) {
     };
 
     match result {
-        Ok(processed) => print_process_result(&options.text, processed, options.show_changes),
+        Ok(processed) => print_process_result(&options.text, processed),
         Err(error) => {
             eprintln!("Post-processing failed: {error}");
             std::process::exit(1);
@@ -505,15 +486,9 @@ fn process_input(text: &str, locale: &str) -> ProcessInput {
     }
 }
 
-fn print_process_result(input: &str, processed: orally_core::ProcessedText, show_changes: bool) {
+fn print_process_result(input: &str, processed: orally_core::ProcessedText) {
     println!("Input:  {input}");
     println!("Output: {}", processed.text);
-    if show_changes && !processed.changes.is_empty() {
-        println!("Changes:");
-        for change in processed.changes {
-            println!("- {change}");
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -543,7 +518,6 @@ struct ProcessOptions {
     task: ProcessTask,
     target_language: Option<String>,
     locale: String,
-    show_changes: bool,
     show_prompt: bool,
     base_url: Option<String>,
     model: Option<String>,
@@ -561,7 +535,6 @@ impl Default for ProcessOptions {
             task: ProcessTask::Cleanup,
             target_language: None,
             locale: "zh-CN".to_string(),
-            show_changes: true,
             show_prompt: false,
             base_url: None,
             model: None,
@@ -592,8 +565,6 @@ impl ProcessOptions {
                 "--" => rest_is_text = true,
                 "--ai" => options.ai = true,
                 "--builtin" => options.ai = false,
-                "--show-changes" => options.show_changes = true,
-                "--no-changes" => options.show_changes = false,
                 "--show-prompt" => options.show_prompt = true,
                 "--task" => {
                     index += 1;
@@ -791,12 +762,11 @@ fn print_help() {
     println!("  cargo run -p orally-cli -- record --seconds 3 --output orally-recording.wav");
     println!("  cargo run -p orally-cli -- transcribe --file orally-recording.wav --model <model>");
     println!("  cargo run -p orally-cli -- dictate --seconds 3 --model <model>");
-    println!("  cargo run -p orally-cli -- transcribe --file orally-recording.wav --raw");
-    println!("  cargo run -p orally-cli -- dictate --seconds 3 --show-changes");
-    println!("  cargo run -p orally-cli -- dictate --seconds 3 --insert --paste-delay-ms 1200");
-    println!("  cargo run -p orally-cli -- listen --paste-delay-ms 300");
+    println!("  cargo run -p orally-cli -- transcribe --file orally-recording.wav");
+    println!("  cargo run -p orally-cli -- dictate --seconds 3 --insert");
+    println!("  cargo run -p orally-cli -- listen");
     println!("  cargo run -p orally-cli -- config init --provider openai-compatible");
-    println!("  cargo run -p orally-cli -- config set output.paste_delay_ms 300");
+    println!("  cargo run -p orally-cli -- config set output.direct_output true");
     println!("  cargo run -p orally-cli -- config show");
     println!();
     println!("Configuration: config.toml beside the executable.");
@@ -813,24 +783,18 @@ fn print_help() {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OutputOptions {
-    raw: bool,
-    show_changes: bool,
     insert: bool,
-    paste_delay_ms: u64,
-    restore_clipboard: bool,
-    restore_clipboard_delay_ms: u64,
+    direct_output: bool,
+    auto_copy: bool,
     locale: String,
 }
 
 impl Default for OutputOptions {
     fn default() -> Self {
         Self {
-            raw: false,
-            show_changes: false,
             insert: false,
-            paste_delay_ms: 750,
-            restore_clipboard: true,
-            restore_clipboard_delay_ms: 250,
+            direct_output: true,
+            auto_copy: false,
             locale: "zh-CN".to_string(),
         }
     }
@@ -839,20 +803,15 @@ impl Default for OutputOptions {
 impl OutputOptions {
     fn from_config(config: &AppConfig) -> Self {
         Self {
-            raw: config.output.raw,
-            show_changes: config.output.show_changes,
             insert: config.output.insert,
-            paste_delay_ms: config.output.paste_delay_ms,
-            restore_clipboard: config.output.restore_clipboard,
-            restore_clipboard_delay_ms: config.output.restore_clipboard_delay_ms,
+            direct_output: config.output.direct_output,
+            auto_copy: config.output.auto_copy,
             locale: config.output.locale.clone(),
         }
     }
 
     fn apply_flag(&mut self, flag: &str) -> Result<(), String> {
         match flag {
-            "--raw" => self.raw = true,
-            "--show-changes" => self.show_changes = true,
             "--insert" => self.insert = true,
             other => return Err(format!("unknown output flag: {other}")),
         }
@@ -863,11 +822,6 @@ impl OutputOptions {
     fn apply_option(&mut self, flag: &str, value: &str) -> Result<(), String> {
         match flag {
             "--locale" => self.locale = value.to_string(),
-            "--paste-delay-ms" => {
-                self.paste_delay_ms = value
-                    .parse::<u64>()
-                    .map_err(|_| "--paste-delay-ms must be a positive integer".to_string())?;
-            }
             other => return Err(format!("unknown output option: {other}")),
         }
 
@@ -993,7 +947,7 @@ impl TranscribeOptions {
                         .ok_or_else(|| format!("{flag} requires a value"))?;
                     asr.apply_option(&flag, value)?;
                 }
-                "--locale" | "--paste-delay-ms" => {
+                "--locale" => {
                     let flag = args[index].clone();
                     index += 1;
                     let value = args
@@ -1001,9 +955,7 @@ impl TranscribeOptions {
                         .ok_or_else(|| format!("{flag} requires a value"))?;
                     output.apply_option(&flag, value)?;
                 }
-                "--raw" | "--show-changes" | "--insert" => {
-                    output.apply_flag(args[index].as_str())?
-                }
+                "--insert" => output.apply_flag(args[index].as_str())?,
                 "--help" | "-h" => return Err("transcribe command help".to_string()),
                 other => return Err(format!("unknown transcribe option: {other}")),
             }
@@ -1069,7 +1021,7 @@ impl DictateOptions {
                         .ok_or_else(|| format!("{flag} requires a value"))?;
                     asr.apply_option(&flag, value)?;
                 }
-                "--locale" | "--paste-delay-ms" => {
+                "--locale" => {
                     let flag = args[index].clone();
                     index += 1;
                     let value = args
@@ -1077,9 +1029,7 @@ impl DictateOptions {
                         .ok_or_else(|| format!("{flag} requires a value"))?;
                     output.apply_option(&flag, value)?;
                 }
-                "--raw" | "--show-changes" | "--insert" => {
-                    output.apply_flag(args[index].as_str())?
-                }
+                "--insert" => output.apply_flag(args[index].as_str())?,
                 "--help" | "-h" => return Err("dictate command help".to_string()),
                 other => return Err(format!("unknown dictate option: {other}")),
             }
@@ -1189,23 +1139,16 @@ mod tests {
             "sample.wav".to_string(),
             "--model".to_string(),
             "test-asr-model".to_string(),
-            "--raw".to_string(),
-            "--show-changes".to_string(),
             "--locale".to_string(),
             "en-US".to_string(),
             "--insert".to_string(),
-            "--paste-delay-ms".to_string(),
-            "1200".to_string(),
         ];
 
         let options =
             TranscribeOptions::parse(&args, &AppConfig::default()).expect("options should parse");
 
         assert_eq!(options.file, PathBuf::from("sample.wav"));
-        assert!(options.output.raw);
-        assert!(options.output.show_changes);
         assert!(options.output.insert);
-        assert_eq!(options.output.paste_delay_ms, 1200);
         assert_eq!(options.output.locale, "en-US");
     }
 
@@ -1245,15 +1188,14 @@ mod tests {
             "2".to_string(),
             "--model".to_string(),
             "test-asr-model".to_string(),
-            "--show-changes".to_string(),
+            "--insert".to_string(),
         ];
 
         let options =
             DictateOptions::parse(&args, &AppConfig::default()).expect("options should parse");
 
         assert_eq!(options.seconds, 2);
-        assert!(options.output.show_changes);
-        assert!(!options.output.raw);
+        assert!(options.output.insert);
     }
 
     #[test]
@@ -1261,14 +1203,14 @@ mod tests {
         let args = vec![
             "--model".to_string(),
             "test-asr-model".to_string(),
-            "--paste-delay-ms".to_string(),
-            "250".to_string(),
+            "--locale".to_string(),
+            "en-GB".to_string(),
         ];
 
         let options =
             ListenOptions::parse(&args, &AppConfig::default()).expect("options should parse");
 
-        assert_eq!(options.dictate.output.paste_delay_ms, 250);
+        assert_eq!(options.dictate.output.locale, "en-GB");
     }
 }
 

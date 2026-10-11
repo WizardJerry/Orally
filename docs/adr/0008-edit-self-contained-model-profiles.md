@@ -38,9 +38,25 @@ recognition vocabulary for a future dictionary feature, and requested that
 configuration help omit development notes. This supersedes the earlier
 shared Prompt field in the ASR and post-processing forms.
 
+On 2026-10-10 the user requested official shadcn/ui controls and a consistent
+black-and-white style across the frontend.
+
+Later on 2026-10-10 the user requested default-dark theme selection, independently
+stored model profiles, `setting.toml` for application settings, immediate automatic
+settings persistence, and synchronization of external file edits. This supersedes
+the single `config.toml` storage and manual application-settings save decisions above.
+
 ## Decision
 
-The current Desktop App stores named profiles in the existing `config.toml`.
+The frontend views use React, Tailwind CSS 4, and official shadcn/ui `new-york`
+Radix components. Their editable JSX source lives in
+`apps/orally-desktop/ui/components/ui`. The main page and Status Overlay share
+the neutral theme. Vite builds both page entries into
+`apps/orally-desktop/dist`, which Tauri embeds in the release application.
+`ui:build` produces these assets, `ui:preview` serves them at port 4173, and
+`ui:test` verifies the existing frontend state and lifecycle seams.
+
+The Desktop App stores each named profile in an independent `profiles/*.toml` file.
 Each profile owns its ASR configuration and ordered post-processing models.
 Each post-processing model owns its endpoint, credentials, model name, base
 instructions, template, fallback choice, and ordered Prompt children. These editor Prompt
@@ -75,19 +91,25 @@ Existing language, environment-variable, user-template,
 and fallback values remain in the configuration even though the simplified
 service form does not edit them.
 
-Settings omits output locale, config-path and Portable controls. `config.toml`
-always resides beside the executable. If absent, a valid legacy file is copied
-from the former environment/AppData/home locations without deleting its source
-or replacing an existing destination. Read and parse errors remain visible.
+Settings omits output locale, config-path and Portable controls. `setting.toml`
+and `profiles/` reside beside the executable. The settings document contains global
+settings, the selected profile ID, and profile order, without model credentials.
+An existing `config.toml` (including migration from former environment/AppData/home
+locations) is split without deleting its source or replacing existing split settings.
+Application settings save automatically and independently of model drafts. The final
+Other section contains a Dark mode checkbox, enabled by default. Atomic replacement
+prevents partially written settings. A native poll reads files every 500 ms, applies
+two matching snapshots, updates hotkey registration and the tray, and notifies the UI.
+Invalid writes preserve the prior binding and UI, report an error, and are retried.
 This replaces the earlier optional config-only Portable path precedence; the
 broader future Portable Installation data contract remains separate.
 
 The sole configurable shortcut is the global dictation toggle. Clicking its
 control captures a key combination into the existing `hotkey.preset` field.
-Saving registers it immediately; registration or persistence failure retains the
+Completing capture automatically saves and registers it; registration or persistence failure retains the
 previous binding. Capture temporarily releases the binding and restores it on
-completion, Escape, or loss of focus. The settings window retains fixed Ctrl+S
-for saving, and no longer stores demonstration editing or window shortcuts.
+completion, Escape, or loss of focus. The model page retains fixed Ctrl+S
+for saving profiles, and no longer stores demonstration editing or window shortcuts.
 
 In AI mode, enabled models execute in visible order. The first receives the
 Raw Transcript and each later model receives the previous model's output.
@@ -119,9 +141,13 @@ this smaller editor does not implement those storage or sharing contracts.
 
 ## Consequences
 
+This view migration retains the `ConfigEditor`, `TestSession`, shortcut capture,
+and microphone-meter contracts. Settings persistence and native change events now
+operate separately from explicit model saves. Draft retention and test behavior remain.
+
 Switching profiles retains drafts. Saving persists the profile collection and
-copies the selected profile into the existing top-level `asr` and `postprocess`
-fields. Global output, audio, hotkey, and privacy settings stay outside profiles.
+assembles the selected profile into runtime `asr` and `postprocess` fields on load.
+Global output, audio, hotkey, privacy, and appearance settings stay outside profiles.
 The tray lists saved profiles using stable IDs and a dot for the active profile.
 Switching persists the selected ID and mirrors its service settings immediately;
 saving profiles or changed names refreshes the menu. The settings window receives

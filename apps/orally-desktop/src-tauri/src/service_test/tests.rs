@@ -139,7 +139,6 @@ fn text_test_uses_unsaved_draft_models_keys_and_prompts_in_order_without_asr() {
 fn connection_tests_selected_disabled_model_without_running_its_prompts() {
     let (endpoint, server) = serve(vec![("200 OK", completion("OK"))]);
     let mut config = AppConfig::default();
-    config.output.raw = true;
     let mut selected = model("selected", &endpoint, "selected-draft-key");
     selected.enabled = false;
     selected.system_prompt = "do not use these custom instructions".to_string();
@@ -460,7 +459,7 @@ fn missing_credential_never_falls_back_and_identifies_the_failed_node() {
 }
 
 #[test]
-fn privacy_blocks_external_requests_but_allows_local_and_raw_text_tests() {
+fn privacy_blocks_external_requests_but_allows_local_and_empty_pipeline_text_tests() {
     let mut config = AppConfig::default();
     config.privacy.allow_external_requests = false;
     config.output.locale = "en-US".to_string();
@@ -488,11 +487,6 @@ fn privacy_blocks_external_requests_but_allows_local_and_raw_text_tests() {
     config.postprocess.models[0].enabled = false;
     let empty = check_config_input(&config, Some("嗯 text".to_string()), None, None).unwrap();
     assert_eq!(empty.final_text, "嗯 text");
-
-    config.postprocess.models[0].enabled = true;
-    config.output.raw = true;
-    let raw = check_config_input(&config, Some("嗯 text".to_string()), None, None).unwrap();
-    assert_eq!(raw.final_text, "嗯 text");
 }
 
 #[test]

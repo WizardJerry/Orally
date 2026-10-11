@@ -255,6 +255,11 @@ fn select_profile(config: &AppConfig, profile_id: &str) -> Result<AppConfig, Str
 }
 
 fn persist_selection(path: &Path, profile_id: &str) -> Result<AppConfig, String> {
+    if path.file_name().is_some_and(|name| name == "setting.toml") {
+        return orally_config::ConfigStore::new(path.parent().ok_or("无法确定配置目录")?)
+            .select_profile(profile_id)
+            .map_err(config_error_message);
+    }
     let config = orally_config::load_from_path(path).map_err(config_error_message)?;
     let selected = select_profile(&config, profile_id)?;
     orally_config::save_to_path(path, &selected).map_err(config_error_message)?;
