@@ -1,17 +1,18 @@
-use orally_asr::{
-    ChatAudioAsrConfig, ChatAudioAsrProvider, OpenAiCompatibleAsrConfig,
-    OpenAiCompatibleAsrProvider,
-};
 use orally_audio::{
     encode_wav_pcm16, CpalAudioRecorder, CpalRecordingSession, RecordedAudio, RecordingConfig,
 };
-use orally_config::{AppConfig, ProviderPreset};
+use orally_config::{AppConfig, ProviderPreset, OPENAI_COMPAT_API_KEY_ENV, OPENAI_COMPAT_BASE_URL};
 use orally_core::{
-    AppContext, AsrProvider, AudioInput, BuiltInTextProcessor, DemoTextAsrProvider, DictionaryTerm,
-    InsertMode, MemoryInserter, OrallyPipeline, PostprocessPrompt, ProcessInput, TextInserter,
+    AppContext, AudioInput, BuiltInTextProcessor, DemoTextAsrProvider, DictionaryTerm, InsertMode,
+    MemoryInserter, OrallyError, OrallyPipeline, PostprocessPrompt, ProcessInput, TextInserter,
     TextProcessor, Transcript,
 };
-use orally_windows::{run_hotkey_loop, Hotkey, WindowsClipboardPasteInserter, WindowsPasteConfig};
+use orally_llm::{render_user_template, OpenAiChatPostprocessor, OpenAiChatPostprocessorConfig};
+use orally_speech::{
+    AsrProtocol, CredentialSource, RecognitionPlan, RefinementPlan, SpeechOutcome, SpeechPlan,
+    SpeechProcessor,
+};
+use orally_windows::{run_hotkey_loop, Hotkey, WindowsOutputConfig, WindowsTextInserter};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -21,14 +22,7 @@ fn main() {
 
     match args.first().map(String::as_str) {
         Some("demo") => run_demo("嗯 今天 我想 写 一封 邮件 给 visual studio code 团队"),
-        Some("process") => {
-            let text = args.iter().skip(1).cloned().collect::<Vec<_>>().join(" ");
-            if text.trim().is_empty() {
-                print_help();
-                return;
-            }
-            run_demo(&text);
-        }
+        Some("process") => run_process(&args[1..]),
         Some("record") => run_record(&args[1..]),
         Some("transcribe") => run_transcribe(&args[1..]),
         Some("dictate") => run_dictate(&args[1..]),
@@ -108,8 +102,8 @@ fn run_transcribe(args: &[String]) {
         }
     };
 
-    let api = match build_asr_provider(&options.asr) {
-        Ok(api) => api,
+    let speech = match build_speech_processor(&options.asr, &options.output) {
+        Ok(speech) => speech,
         Err(error) => {
             eprintln!("ASR configuration failed: {error}");
             std::process::exit(1);
@@ -124,8 +118,12 @@ fn run_transcribe(args: &[String]) {
         }
     };
 
-    match api.transcribe(AudioInput::wav(bytes)) {
-        Ok(transcript) => print_transcript(transcript, &options.output),
+    match speech.process(AudioInput::wav(bytes)) {
+        Ok(outcome) => print_speech_outcome(outcome, &options.output),
+        Err(error @ OrallyError::Processing(_)) => {
+            eprintln!("Post-processing failed: {error}");
+            std::process::exit(1);
+        }
         Err(error) => {
             eprintln!("Transcription failed: {error}");
             std::process::exit(1);
@@ -144,16 +142,20 @@ fn run_dictate(args: &[String]) {
         }
     };
 
-    let api = match build_asr_provider(&options.asr) {
-        Ok(api) => api,
+    let speech = match build_speech_processor(&options.asr, &options.output) {
+        Ok(speech) => speech,
         Err(error) => {
             eprintln!("ASR configuration failed: {error}");
             std::process::exit(1);
         }
     };
 
-    match dictate_once(api.as_ref(), options.seconds) {
-        Ok(transcript) => print_transcript(transcript, &options.output),
+    match dictate_once(&speech, options.seconds) {
+        Ok(outcome) => print_speech_outcome(outcome, &options.output),
+        Err(error @ OrallyError::Processing(_)) => {
+            eprintln!("Post-processing failed: {error}");
+            std::process::exit(1);
+        }
         Err(error) => {
             eprintln!("Dictation failed: {error}");
             std::process::exit(1);
@@ -173,8 +175,8 @@ fn run_listen(args: &[String]) {
     };
     options.dictate.output.insert = true;
 
-    let api = match build_asr_provider(&options.dictate.asr) {
-        Ok(api) => api,
+    let speech = match build_speech_processor(&options.dictate.asr, &options.dictate.output) {
+        Ok(speech) => speech,
         Err(error) => {
             eprintln!("ASR configuration failed: {error}");
             std::process::exit(1);
@@ -189,8 +191,15 @@ fn run_listen(args: &[String]) {
         if let Some(session) = active_recording.take() {
             eprintln!("Recording stopped. Sending audio to ASR provider...");
             let recorded = finish_recording(session)?;
-            let transcript = api.transcribe(recorded.audio)?;
-            print_transcript(transcript, &options.dictate.output);
+            let outcome = match speech.process(recorded.audio) {
+                Ok(outcome) => outcome,
+                Err(error @ OrallyError::Processing(_)) => {
+                    eprintln!("Post-processing failed: {error}");
+                    std::process::exit(1);
+                }
+                Err(error) => return Err(error),
+            };
+            print_speech_outcome(outcome, &options.dictate.output);
         } else {
             eprintln!("Recording started. Press Ctrl+Alt+Space again to stop.");
             active_recording = Some(CpalRecordingSession::start()?);
@@ -223,7 +232,7 @@ fn run_config(args: &[String]) {
         Some("init") => run_config_init(&args[1..]),
         Some("set") => run_config_set(&args[1..]),
         _ => {
-            eprintln!("Usage: config path | config show | config init [--provider dashscope|openrouter|openai] [--portable] [--force] | config set <key> <value>");
+            eprintln!("Usage: config path | config show | config init [--provider openai-compatible|openai] [--portable] [--force] | config set <key> <value>");
             std::process::exit(2);
         }
     }
@@ -257,9 +266,8 @@ fn run_config_set(args: &[String]) {
 }
 
 fn run_config_init(args: &[String]) {
-    let mut preset = ProviderPreset::DashScope;
+    let mut preset = ProviderPreset::OpenAiCompatible;
     let mut force = false;
-    let mut portable = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -276,7 +284,9 @@ fn run_config_init(args: &[String]) {
                 });
             }
             "--force" | "-f" => force = true,
-            "--portable" => portable = true,
+            // Kept for older commands; every configuration now uses the
+            // executable directory.
+            "--portable" => {}
             other => {
                 eprintln!("unknown config init option: {other}");
                 std::process::exit(2);
@@ -287,11 +297,7 @@ fn run_config_init(args: &[String]) {
     }
 
     let config = preset.config();
-    let result = if portable {
-        orally_config::init_portable_config(&config, force)
-    } else {
-        orally_config::init_config(&config, force)
-    };
+    let result = orally_config::init_config(&config, force);
     match result {
         Ok(path) => {
             println!("Wrote {}", path.display());
@@ -305,17 +311,14 @@ fn run_config_init(args: &[String]) {
     }
 }
 
-fn dictate_once(
-    api: &dyn AsrProvider,
-    seconds: u64,
-) -> Result<Transcript, orally_core::OrallyError> {
+fn dictate_once(speech: &SpeechProcessor, seconds: u64) -> Result<SpeechOutcome, OrallyError> {
     println!("Recording for {seconds} second(s), then sending audio to ASR provider...");
 
     let recorder = CpalAudioRecorder;
     let recorded = recorder.record_for(RecordingConfig::for_seconds(seconds))?;
     print_recording_metrics(&recorded);
 
-    api.transcribe(recorded.audio)
+    speech.process(recorded.audio)
 }
 
 fn finish_recording(
@@ -335,54 +338,20 @@ fn print_recording_metrics(recorded: &RecordedAudio) {
     );
 }
 
-fn print_transcript(transcript: Transcript, options: &OutputOptions) {
-    let (text, changes) = if options.raw {
-        (transcript.text, Vec::new())
-    } else {
-        let processor = BuiltInTextProcessor;
-        let processed = match processor.process(ProcessInput {
-            transcript,
-            context: AppContext {
-                locale: options.locale.clone(),
-                ..AppContext::default()
-            },
-            prompt: PostprocessPrompt::default(),
-            dictionary_terms: default_dictionary(),
-        }) {
-            Ok(processed) => processed,
-            Err(error) => {
-                eprintln!("Post-processing failed: {error}");
-                std::process::exit(1);
-            }
-        };
-        (processed.text, processed.changes)
-    };
+fn print_speech_outcome(outcome: SpeechOutcome, options: &OutputOptions) {
+    let text = outcome.final_text;
 
     if options.insert {
-        eprintln!(
-            "Pasting in {} ms. Focus the target input field now...",
-            options.paste_delay_ms
-        );
-        let inserter = WindowsClipboardPasteInserter::new(WindowsPasteConfig {
-            paste_delay: std::time::Duration::from_millis(options.paste_delay_ms),
-            restore_clipboard: options.restore_clipboard,
-            restore_clipboard_delay: std::time::Duration::from_millis(
-                options.restore_clipboard_delay_ms,
-            ),
+        let inserter = WindowsTextInserter::new(WindowsOutputConfig {
+            direct_output: options.direct_output,
+            auto_copy: options.auto_copy,
         });
-        if let Err(error) = inserter.insert(&text, InsertMode::ClipboardFallback) {
+        if let Err(error) = inserter.insert(&text, InsertMode::Direct) {
             eprintln!("Insertion failed: {error}");
             std::process::exit(1);
         }
     } else {
         println!("{text}");
-    }
-
-    if options.show_changes && !changes.is_empty() {
-        println!("Changes:");
-        for change in changes {
-            println!("- {change}");
-        }
     }
 }
 
@@ -399,43 +368,354 @@ fn default_dictionary() -> Vec<DictionaryTerm> {
     ]
 }
 
-fn build_asr_provider(options: &AsrOptions) -> Result<Box<dyn AsrProvider>, String> {
+fn build_speech_processor(
+    options: &AsrOptions,
+    output: &OutputOptions,
+) -> Result<SpeechProcessor, String> {
+    SpeechProcessor::new(SpeechPlan {
+        recognition: RecognitionPlan {
+            base_url: options.base_url.clone(),
+            model: options.model.clone(),
+            credential: CredentialSource::new(options.api_key.clone(), options.api_key_env.clone()),
+            protocol: options.protocol,
+            language: options.language.clone(),
+        },
+        refinement: RefinementPlan::LocalBasicCleanup,
+        locale: output.locale.clone(),
+    })
+    .map_err(|error| error.to_string())
+}
+
+fn run_process(args: &[String]) {
+    let options = match ProcessOptions::parse(args) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("{message}");
+            print_help();
+            std::process::exit(2);
+        }
+    };
+
+    let input = process_input(&options.text, &options.locale);
+    let result = if options.ai {
+        run_ai_process(&options, input)
+    } else {
+        BuiltInTextProcessor.process(input)
+    };
+
+    match result {
+        Ok(processed) => print_process_result(&options.text, processed),
+        Err(error) => {
+            eprintln!("Post-processing failed: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_ai_process(
+    options: &ProcessOptions,
+    input: ProcessInput,
+) -> Result<orally_core::ProcessedText, orally_core::OrallyError> {
+    let config = load_config_or_exit();
+    let api_key_env = options
+        .api_key_env
+        .clone()
+        .unwrap_or_else(|| config.postprocess.api_key_env.clone());
     let api_key = options
         .api_key
         .clone()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| env::var(&options.api_key_env).ok())
+        .or_else(|| {
+            config
+                .postprocess
+                .api_key
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .or_else(|| env::var(&api_key_env).ok())
         .ok_or_else(|| {
-            format!(
-                "missing API key: set asr.api_key or env var {}",
-                options.api_key_env
-            )
+            orally_core::OrallyError::InvalidInput(format!(
+                "missing postprocess API key: pass --api-key or set {api_key_env}"
+            ))
         })?;
-    match options.resolved_protocol() {
-        AsrProtocol::OpenAiTranscriptions => {
-            let mut config = OpenAiCompatibleAsrConfig::new(
-                options.base_url.clone(),
-                api_key,
-                options.model.clone(),
-            );
-            config.language = options.language.clone();
-            config.prompt = options.prompt.clone();
 
-            OpenAiCompatibleAsrProvider::new(config)
-                .map(|provider| Box::new(provider) as Box<dyn AsrProvider>)
-                .map_err(|error| error.to_string())
-        }
-        AsrProtocol::ChatAudio => {
-            let mut config =
-                ChatAudioAsrConfig::new(options.base_url.clone(), api_key, options.model.clone());
-            config.language = options.language.clone();
-            config.prompt = options.prompt.clone();
+    let mut llm_config = OpenAiChatPostprocessorConfig::new(
+        options
+            .base_url
+            .clone()
+            .unwrap_or_else(|| config.postprocess.base_url.clone()),
+        api_key,
+        options
+            .model
+            .clone()
+            .unwrap_or_else(|| config.postprocess.model.clone()),
+    );
+    llm_config.system_prompt = options
+        .system_prompt
+        .clone()
+        .unwrap_or_else(|| process_task_system_prompt(options.task));
+    llm_config.user_template = options
+        .user_template
+        .clone()
+        .unwrap_or_else(|| process_task_user_template(options.task, options.target_language()));
 
-            ChatAudioAsrProvider::new(config)
-                .map(|provider| Box::new(provider) as Box<dyn AsrProvider>)
-                .map_err(|error| error.to_string())
+    if options.show_prompt {
+        println!("System prompt:\n{}\n", llm_config.system_prompt);
+        println!(
+            "User prompt:\n{}\n",
+            render_user_template(&llm_config.user_template, &input)
+        );
+    }
+
+    OpenAiChatPostprocessor::new(llm_config)?.process(input)
+}
+
+fn process_input(text: &str, locale: &str) -> ProcessInput {
+    ProcessInput {
+        transcript: Transcript {
+            text: text.to_string(),
+            language: Some(locale.to_string()),
+            segments: Vec::new(),
+        },
+        context: AppContext {
+            locale: locale.to_string(),
+            ..AppContext::default()
+        },
+        prompt: PostprocessPrompt::default(),
+        dictionary_terms: default_dictionary(),
+    }
+}
+
+fn print_process_result(input: &str, processed: orally_core::ProcessedText) {
+    println!("Input:  {input}");
+    println!("Output: {}", processed.text);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessTask {
+    Cleanup,
+    Outline,
+    Translate,
+}
+
+impl ProcessTask {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "cleanup" | "clean" | "polish" => Ok(Self::Cleanup),
+            "outline" | "points" | "list" => Ok(Self::Outline),
+            "translate" | "translation" => Ok(Self::Translate),
+            other => Err(format!(
+                "unknown process task: {other}; expected cleanup, outline, or translate"
+            )),
         }
-        AsrProtocol::Auto => unreachable!("auto protocol should resolve before provider build"),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcessOptions {
+    text: String,
+    ai: bool,
+    task: ProcessTask,
+    target_language: Option<String>,
+    locale: String,
+    show_prompt: bool,
+    base_url: Option<String>,
+    model: Option<String>,
+    api_key: Option<String>,
+    api_key_env: Option<String>,
+    system_prompt: Option<String>,
+    user_template: Option<String>,
+}
+
+impl Default for ProcessOptions {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            ai: false,
+            task: ProcessTask::Cleanup,
+            target_language: None,
+            locale: "zh-CN".to_string(),
+            show_prompt: false,
+            base_url: None,
+            model: None,
+            api_key: None,
+            api_key_env: None,
+            system_prompt: None,
+            user_template: None,
+        }
+    }
+}
+
+impl ProcessOptions {
+    fn parse(args: &[String]) -> Result<Self, String> {
+        let mut options = Self::default();
+        let mut text_parts = Vec::new();
+        let mut index = 0;
+        let mut rest_is_text = false;
+
+        while index < args.len() {
+            let arg = &args[index];
+            if rest_is_text {
+                text_parts.push(arg.clone());
+                index += 1;
+                continue;
+            }
+
+            match arg.as_str() {
+                "--" => rest_is_text = true,
+                "--ai" => options.ai = true,
+                "--builtin" => options.ai = false,
+                "--show-prompt" => options.show_prompt = true,
+                "--task" => {
+                    index += 1;
+                    let value = args
+                        .get(index)
+                        .ok_or_else(|| "--task requires a value".to_string())?;
+                    options.task = ProcessTask::parse(value)?;
+                }
+                "--target-language" | "--to" => {
+                    index += 1;
+                    options.target_language = Some(
+                        args.get(index)
+                            .ok_or_else(|| format!("{arg} requires a value"))?
+                            .to_string(),
+                    );
+                }
+                "--locale" => {
+                    index += 1;
+                    options.locale = args
+                        .get(index)
+                        .ok_or_else(|| "--locale requires a value".to_string())?
+                        .to_string();
+                }
+                "--base-url" => {
+                    index += 1;
+                    options.base_url = Some(
+                        args.get(index)
+                            .ok_or_else(|| "--base-url requires a value".to_string())?
+                            .to_string(),
+                    );
+                }
+                "--model" => {
+                    index += 1;
+                    options.model = Some(
+                        args.get(index)
+                            .ok_or_else(|| "--model requires a value".to_string())?
+                            .to_string(),
+                    );
+                }
+                "--api-key" => {
+                    index += 1;
+                    options.api_key = Some(
+                        args.get(index)
+                            .ok_or_else(|| "--api-key requires a value".to_string())?
+                            .to_string(),
+                    );
+                }
+                "--api-key-env" => {
+                    index += 1;
+                    options.api_key_env = Some(
+                        args.get(index)
+                            .ok_or_else(|| "--api-key-env requires a value".to_string())?
+                            .to_string(),
+                    );
+                }
+                "--system-prompt" => {
+                    index += 1;
+                    options.system_prompt = Some(
+                        args.get(index)
+                            .ok_or_else(|| "--system-prompt requires a value".to_string())?
+                            .to_string(),
+                    );
+                }
+                "--user-template" => {
+                    index += 1;
+                    options.user_template = Some(
+                        args.get(index)
+                            .ok_or_else(|| "--user-template requires a value".to_string())?
+                            .to_string(),
+                    );
+                }
+                "--help" | "-h" => return Err("process command help".to_string()),
+                other if other.starts_with('-') => {
+                    return Err(format!("unknown process option: {other}"));
+                }
+                _ => text_parts.push(arg.clone()),
+            }
+
+            index += 1;
+        }
+
+        options.text = text_parts.join(" ");
+        if options.text.trim().is_empty() {
+            return Err("missing text to process".to_string());
+        }
+
+        if !options.ai && options.task != ProcessTask::Cleanup {
+            return Err(format!(
+                "task {:?} requires --ai because the built-in processor only supports cleanup",
+                options.task
+            ));
+        }
+
+        Ok(options)
+    }
+
+    fn target_language(&self) -> &str {
+        self.target_language.as_deref().unwrap_or("English")
+    }
+}
+
+fn process_task_system_prompt(task: ProcessTask) -> String {
+    let task_line = match task {
+        ProcessTask::Cleanup => "Task: clean up a raw speech transcript into paste-ready text.",
+        ProcessTask::Outline => {
+            "Task: convert a raw speech transcript into a concise numbered list of key points."
+        }
+        ProcessTask::Translate => {
+            "Task: translate a raw speech transcript into the requested target language."
+        }
+    };
+
+    format!(
+        "You are Orally's AI postprocessor for speech transcripts.\n\
+{task_line}\n\
+Rules:\n\
+- Preserve the speaker's factual meaning, intent, names, product terms, URLs, and code identifiers.\n\
+- Remove filler words, repeated fragments, false starts, and self-corrections unless they change the meaning.\n\
+- Do not add facts, explanations, headings, labels, quotes, or markdown fences.\n\
+- Return only the final text for direct insertion."
+    )
+}
+
+fn process_task_user_template(task: ProcessTask, target_language: &str) -> String {
+    match task {
+        ProcessTask::Cleanup => {
+            "Locale: {{locale}}\n\
+Task: cleanup\n\
+Transcript:\n\
+{{transcript}}\n\n\
+Produce polished text in the transcript's original language. Keep normal prose unless the transcript clearly asks for a list."
+                .to_string()
+        }
+        ProcessTask::Outline => {
+            "Locale: {{locale}}\n\
+Task: outline\n\
+Transcript:\n\
+{{transcript}}\n\n\
+Extract the main points as a numbered list using the format \"1. ...\". Merge duplicates and remove conversational filler."
+                .to_string()
+        }
+        ProcessTask::Translate => {
+            format!(
+                "Locale: {{{{locale}}}}\n\
+Task: translate\n\
+Target language: {target_language}\n\
+Transcript:\n\
+{{{{transcript}}}}\n\n\
+Translate the meaning into {target_language}. Remove conversational filler, keep intentional names and technical terms, and preserve the speaker's intent."
+            )
+        }
     }
 }
 
@@ -476,45 +756,45 @@ fn print_help() {
     println!("Usage:");
     println!("  cargo run -p orally-cli -- demo");
     println!("  cargo run -p orally-cli -- process \"嗯 今天 给 visual studio code 团队 写邮件\"");
+    println!("  cargo run -p orally-cli -- process --ai --task cleanup --model <model> \"嗯 这里有几个想法\"");
+    println!("  cargo run -p orally-cli -- process --ai --task outline --model <model> \"第一点... 第二点...\"");
+    println!("  cargo run -p orally-cli -- process --ai --task translate --to English --model <model> \"请把这段话翻译一下\"");
     println!("  cargo run -p orally-cli -- record --seconds 3 --output orally-recording.wav");
     println!("  cargo run -p orally-cli -- transcribe --file orally-recording.wav --model <model>");
     println!("  cargo run -p orally-cli -- dictate --seconds 3 --model <model>");
-    println!("  cargo run -p orally-cli -- transcribe --file orally-recording.wav --raw");
-    println!("  cargo run -p orally-cli -- dictate --seconds 3 --show-changes");
-    println!("  cargo run -p orally-cli -- dictate --seconds 3 --insert --paste-delay-ms 1200");
-    println!("  cargo run -p orally-cli -- listen --paste-delay-ms 300");
-    println!("  cargo run -p orally-cli -- config init --provider dashscope");
-    println!("  cargo run -p orally-cli -- config init --provider dashscope --portable");
-    println!("  cargo run -p orally-cli -- config set output.paste_delay_ms 300");
+    println!("  cargo run -p orally-cli -- transcribe --file orally-recording.wav");
+    println!("  cargo run -p orally-cli -- dictate --seconds 3 --insert");
+    println!("  cargo run -p orally-cli -- listen");
+    println!("  cargo run -p orally-cli -- config init --provider openai-compatible");
+    println!("  cargo run -p orally-cli -- config set output.direct_output true");
     println!("  cargo run -p orally-cli -- config show");
     println!();
+    println!("Configuration: config.toml beside the executable.");
+    println!("  --portable is a compatibility alias for the default config init behavior.");
+    println!("  ORALLY_CONFIG is only a legacy migration source when this file is absent.");
+    println!();
     println!("ASR environment:");
-    println!("  ORALLY_ASR_API_KEY       API key read by default");
-    println!("  ORALLY_ASR_BASE_URL      Optional, default https://api.openai.com/v1");
+    println!("  {OPENAI_COMPAT_API_KEY_ENV}  API key used by the OpenAI-compatible preset");
+    println!("  ORALLY_ASR_API_KEY       Optional override API key");
+    println!("  ORALLY_ASR_BASE_URL      Optional override, default {OPENAI_COMPAT_BASE_URL}");
     println!("  ORALLY_ASR_MODEL         Optional fallback for --model");
-    println!("  ORALLY_ASR_PROTOCOL      auto, openai-transcriptions, or chat-audio");
+    println!("  ORALLY_ASR_PROTOCOL      Optional override: auto (default), openai-transcriptions, or chat-audio");
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OutputOptions {
-    raw: bool,
-    show_changes: bool,
     insert: bool,
-    paste_delay_ms: u64,
-    restore_clipboard: bool,
-    restore_clipboard_delay_ms: u64,
+    direct_output: bool,
+    auto_copy: bool,
     locale: String,
 }
 
 impl Default for OutputOptions {
     fn default() -> Self {
         Self {
-            raw: false,
-            show_changes: false,
             insert: false,
-            paste_delay_ms: 750,
-            restore_clipboard: true,
-            restore_clipboard_delay_ms: 250,
+            direct_output: true,
+            auto_copy: false,
             locale: "zh-CN".to_string(),
         }
     }
@@ -523,20 +803,15 @@ impl Default for OutputOptions {
 impl OutputOptions {
     fn from_config(config: &AppConfig) -> Self {
         Self {
-            raw: config.output.raw,
-            show_changes: config.output.show_changes,
             insert: config.output.insert,
-            paste_delay_ms: config.output.paste_delay_ms,
-            restore_clipboard: config.output.restore_clipboard,
-            restore_clipboard_delay_ms: config.output.restore_clipboard_delay_ms,
+            direct_output: config.output.direct_output,
+            auto_copy: config.output.auto_copy,
             locale: config.output.locale.clone(),
         }
     }
 
     fn apply_flag(&mut self, flag: &str) -> Result<(), String> {
         match flag {
-            "--raw" => self.raw = true,
-            "--show-changes" => self.show_changes = true,
             "--insert" => self.insert = true,
             other => return Err(format!("unknown output flag: {other}")),
         }
@@ -547,35 +822,10 @@ impl OutputOptions {
     fn apply_option(&mut self, flag: &str, value: &str) -> Result<(), String> {
         match flag {
             "--locale" => self.locale = value.to_string(),
-            "--paste-delay-ms" => {
-                self.paste_delay_ms = value
-                    .parse::<u64>()
-                    .map_err(|_| "--paste-delay-ms must be a positive integer".to_string())?;
-            }
             other => return Err(format!("unknown output option: {other}")),
         }
 
         Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AsrProtocol {
-    Auto,
-    OpenAiTranscriptions,
-    ChatAudio,
-}
-
-impl AsrProtocol {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "auto" => Ok(Self::Auto),
-            "openai-transcriptions" | "multipart" => Ok(Self::OpenAiTranscriptions),
-            "chat-audio" | "chat-completions" => Ok(Self::ChatAudio),
-            other => Err(format!(
-                "unknown ASR protocol: {other}; expected auto, openai-transcriptions, or chat-audio"
-            )),
-        }
     }
 }
 
@@ -587,7 +837,6 @@ struct AsrOptions {
     api_key_env: String,
     protocol: AsrProtocol,
     language: Option<String>,
-    prompt: Option<String>,
 }
 
 impl AsrOptions {
@@ -597,9 +846,8 @@ impl AsrOptions {
             model: config.asr.model.clone(),
             api_key: config.asr.api_key.clone(),
             api_key_env: config.asr.api_key_env.clone(),
-            protocol: AsrProtocol::parse(&config.asr.protocol).unwrap_or(AsrProtocol::Auto),
+            protocol: config.asr.protocol.parse().unwrap_or(AsrProtocol::Auto),
             language: config.asr.language.clone(),
-            prompt: config.asr.prompt.clone(),
         };
 
         if let Ok(value) = env::var("ORALLY_ASR_BASE_URL") {
@@ -615,15 +863,12 @@ impl AsrOptions {
             options.api_key_env = value;
         }
         if let Ok(value) = env::var("ORALLY_ASR_PROTOCOL") {
-            if let Ok(protocol) = AsrProtocol::parse(&value) {
+            if let Ok(protocol) = value.parse() {
                 options.protocol = protocol;
             }
         }
         if let Ok(value) = env::var("ORALLY_ASR_LANGUAGE") {
             options.language = Some(value);
-        }
-        if let Ok(value) = env::var("ORALLY_ASR_PROMPT") {
-            options.prompt = Some(value);
         }
 
         options
@@ -635,9 +880,12 @@ impl AsrOptions {
             "--model" => self.model = value.to_string(),
             "--api-key" => self.api_key = Some(value.to_string()),
             "--api-key-env" => self.api_key_env = value.to_string(),
-            "--protocol" => self.protocol = AsrProtocol::parse(value)?,
+            "--protocol" => {
+                self.protocol = value
+                    .parse::<AsrProtocol>()
+                    .map_err(|error| error.to_string())?
+            }
             "--language" => self.language = Some(value.to_string()),
-            "--prompt" => self.prompt = Some(value.to_string()),
             other => return Err(format!("unknown ASR option: {other}")),
         }
 
@@ -658,23 +906,6 @@ impl AsrOptions {
         }
 
         Ok(())
-    }
-
-    fn resolved_protocol(&self) -> AsrProtocol {
-        if self.protocol != AsrProtocol::Auto {
-            return self.protocol;
-        }
-
-        let base_url = self.base_url.to_ascii_lowercase();
-        let model = self.model.to_ascii_lowercase();
-        if base_url.contains("openrouter.ai")
-            || base_url.contains("dashscope.aliyuncs.com/compatible-mode")
-            || model.contains("qwen3-asr")
-        {
-            AsrProtocol::ChatAudio
-        } else {
-            AsrProtocol::OpenAiTranscriptions
-        }
     }
 }
 
@@ -708,7 +939,7 @@ impl TranscribeOptions {
                     ));
                 }
                 "--base-url" | "--model" | "--api-key" | "--api-key-env" | "--protocol"
-                | "--language" | "--prompt" => {
+                | "--language" => {
                     let flag = args[index].clone();
                     index += 1;
                     let value = args
@@ -716,7 +947,7 @@ impl TranscribeOptions {
                         .ok_or_else(|| format!("{flag} requires a value"))?;
                     asr.apply_option(&flag, value)?;
                 }
-                "--locale" | "--paste-delay-ms" => {
+                "--locale" => {
                     let flag = args[index].clone();
                     index += 1;
                     let value = args
@@ -724,9 +955,7 @@ impl TranscribeOptions {
                         .ok_or_else(|| format!("{flag} requires a value"))?;
                     output.apply_option(&flag, value)?;
                 }
-                "--raw" | "--show-changes" | "--insert" => {
-                    output.apply_flag(args[index].as_str())?
-                }
+                "--insert" => output.apply_flag(args[index].as_str())?,
                 "--help" | "-h" => return Err("transcribe command help".to_string()),
                 other => return Err(format!("unknown transcribe option: {other}")),
             }
@@ -784,7 +1013,7 @@ impl DictateOptions {
                     }
                 }
                 "--base-url" | "--model" | "--api-key" | "--api-key-env" | "--protocol"
-                | "--language" | "--prompt" => {
+                | "--language" => {
                     let flag = args[index].clone();
                     index += 1;
                     let value = args
@@ -792,7 +1021,7 @@ impl DictateOptions {
                         .ok_or_else(|| format!("{flag} requires a value"))?;
                     asr.apply_option(&flag, value)?;
                 }
-                "--locale" | "--paste-delay-ms" => {
+                "--locale" => {
                     let flag = args[index].clone();
                     index += 1;
                     let value = args
@@ -800,9 +1029,7 @@ impl DictateOptions {
                         .ok_or_else(|| format!("{flag} requires a value"))?;
                     output.apply_option(&flag, value)?;
                 }
-                "--raw" | "--show-changes" | "--insert" => {
-                    output.apply_flag(args[index].as_str())?
-                }
+                "--insert" => output.apply_flag(args[index].as_str())?,
                 "--help" | "-h" => return Err("dictate command help".to_string()),
                 other => return Err(format!("unknown dictate option: {other}")),
             }
@@ -823,31 +1050,135 @@ impl DictateOptions {
 mod tests {
     use super::*;
 
+    fn string_args(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn recognition_commands_reject_the_removed_prompt_option() {
+        let config = AppConfig::default();
+        let args = string_args(&["--prompt", "retired recognition hint"]);
+        assert!(TranscribeOptions::parse(&args, &config)
+            .unwrap_err()
+            .contains("--prompt"));
+        assert!(DictateOptions::parse(&args, &config)
+            .unwrap_err()
+            .contains("--prompt"));
+    }
+
+    #[test]
+    fn process_options_parse_ai_translate_task() {
+        let options = ProcessOptions::parse(&string_args(&[
+            "--ai",
+            "--task",
+            "translate",
+            "--to",
+            "English",
+            "--locale",
+            "zh-CN",
+            "--model",
+            "test-text-model",
+            "嗯",
+            "今天讨论三个点",
+        ]))
+        .expect("process options should parse");
+
+        assert!(options.ai);
+        assert_eq!(options.task, ProcessTask::Translate);
+        assert_eq!(options.target_language.as_deref(), Some("English"));
+        assert_eq!(options.model.as_deref(), Some("test-text-model"));
+        assert_eq!(options.text, "嗯 今天讨论三个点");
+    }
+
+    #[test]
+    fn process_options_require_ai_for_outline() {
+        let error = ProcessOptions::parse(&string_args(&[
+            "--task",
+            "outline",
+            "第一点性能",
+            "第二点体验",
+        ]))
+        .expect_err("outline should require AI mode");
+
+        assert!(error.contains("requires --ai"));
+    }
+
+    #[test]
+    fn process_options_allow_dash_prefixed_text_after_separator() {
+        let options = ProcessOptions::parse(&string_args(&[
+            "--ai",
+            "--task",
+            "cleanup",
+            "--",
+            "--leading dash should be treated as transcript text",
+        ]))
+        .expect("separator should switch remaining args to text");
+
+        assert_eq!(
+            options.text,
+            "--leading dash should be treated as transcript text"
+        );
+    }
+
+    #[test]
+    fn process_task_prompts_are_task_specific() {
+        let cleanup = process_task_user_template(ProcessTask::Cleanup, "English");
+        let outline = process_task_user_template(ProcessTask::Outline, "English");
+        let translate = process_task_user_template(ProcessTask::Translate, "English");
+
+        assert!(cleanup.contains("Task: cleanup"));
+        assert!(outline.contains("numbered list"));
+        assert!(translate.contains("Target language: English"));
+        assert!(translate.contains("{{transcript}}"));
+    }
+
     #[test]
     fn transcribe_options_parse_output_flags() {
         let args = vec![
             "--file".to_string(),
             "sample.wav".to_string(),
             "--model".to_string(),
-            "qwen3-asr-flash".to_string(),
-            "--raw".to_string(),
-            "--show-changes".to_string(),
+            "test-asr-model".to_string(),
             "--locale".to_string(),
             "en-US".to_string(),
             "--insert".to_string(),
-            "--paste-delay-ms".to_string(),
-            "1200".to_string(),
         ];
 
         let options =
             TranscribeOptions::parse(&args, &AppConfig::default()).expect("options should parse");
 
         assert_eq!(options.file, PathBuf::from("sample.wav"));
-        assert!(options.output.raw);
-        assert!(options.output.show_changes);
         assert!(options.output.insert);
-        assert_eq!(options.output.paste_delay_ms, 1200);
         assert_eq!(options.output.locale, "en-US");
+    }
+
+    #[test]
+    fn transcribe_allows_explicit_generic_protocol_overrides() {
+        for (protocol, expected) in [
+            ("chat-audio", AsrProtocol::ChatAudio),
+            ("openai-transcriptions", AsrProtocol::OpenAiTranscriptions),
+        ] {
+            let options = TranscribeOptions::parse(
+                &string_args(&[
+                    "--file",
+                    "sample.wav",
+                    "--base-url",
+                    "https://compatible.example/v1",
+                    "--model",
+                    "test-audio-model",
+                    "--api-key-env",
+                    "TEST_API_KEY",
+                    "--protocol",
+                    protocol,
+                ]),
+                &AppConfig::default(),
+            )
+            .unwrap();
+
+            assert_eq!(options.asr.protocol, expected);
+            assert_eq!(options.asr.base_url, "https://compatible.example/v1");
+            assert_eq!(options.asr.model, "test-audio-model");
+        }
     }
 
     #[test]
@@ -856,31 +1187,30 @@ mod tests {
             "--seconds".to_string(),
             "2".to_string(),
             "--model".to_string(),
-            "qwen3-asr-flash".to_string(),
-            "--show-changes".to_string(),
+            "test-asr-model".to_string(),
+            "--insert".to_string(),
         ];
 
         let options =
             DictateOptions::parse(&args, &AppConfig::default()).expect("options should parse");
 
         assert_eq!(options.seconds, 2);
-        assert!(options.output.show_changes);
-        assert!(!options.output.raw);
+        assert!(options.output.insert);
     }
 
     #[test]
     fn listen_options_reuse_dictate_options() {
         let args = vec![
             "--model".to_string(),
-            "qwen3-asr-flash".to_string(),
-            "--paste-delay-ms".to_string(),
-            "250".to_string(),
+            "test-asr-model".to_string(),
+            "--locale".to_string(),
+            "en-GB".to_string(),
         ];
 
         let options =
             ListenOptions::parse(&args, &AppConfig::default()).expect("options should parse");
 
-        assert_eq!(options.dictate.output.paste_delay_ms, 250);
+        assert_eq!(options.dictate.output.locale, "en-GB");
     }
 }
 

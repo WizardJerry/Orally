@@ -1,0 +1,93 @@
+# Codegraph Notes
+
+This repository is prepared for later codegraph-based structure tracking.
+
+## Current Structure
+
+- `Cargo.toml` declares the Rust workspace.
+- `crates/orally-core/src/lib.rs` contains the first domain model and pipeline.
+- `crates/orally-audio/src/lib.rs` contains microphone capture, PCM16 metrics,
+  and WAV encoding.
+- `crates/orally-asr/src/lib.rs` contains OpenAI multipart transcription and
+  chat-completions audio providers.
+- `crates/orally-config/src/lib.rs` contains TOML config presets and load/save
+  helpers.
+- `crates/orally-llm/src/lib.rs` contains OpenAI-compatible chat
+  post-processing.
+- `crates/orally-storage/src/lib.rs` contains JSONL local history helpers.
+- `crates/orally-windows/src/lib.rs` contains Windows clipboard paste insertion
+  with text clipboard restoration and foreground global hotkey listening.
+- `apps/orally-cli/src/main.rs` records audio, calls ASR providers, and passes
+  transcripts through the built-in post-processing pipeline.
+- `apps/orally-desktop/src-tauri/src/main.rs` exposes Tauri config commands and
+  owns the tray icon/window lifecycle, Windows dictation hotkey service, overlay
+  state, ASR call, post-processing, and paste insertion.
+- `apps/orally-desktop/ui/` contains the desktop settings frontend.
+- `apps/orally-desktop/ui/overlay.html` contains the bottom dictation prompt and
+  stop button.
+- `scripts/package-portable.ps1` builds the release desktop app and assembles a
+  portable Windows folder with executable-directory `config.toml`.
+- `apps/windows-ime/src/lib.rs` contains the placeholder Windows TSF DLL exports.
+- `docs/product/` contains product definition, implementation planning, and
+  future product grilling notes.
+- `docs/engineering/` contains human-readable engineering notes.
+- `.agents/` contains agent-only setup, skill, and tooling context.
+
+## Tracking Intent
+
+When codegraph tooling is available in the active session, use it to record:
+
+- crate boundaries
+- trait implementations
+- platform-specific adapters
+- provider implementations
+- data flow from audio capture to text insertion
+
+## Architectural Anchors
+
+- `AsrProvider`
+- `TextProcessor`
+- `TextInserter`
+- `OrallyPipeline`
+- `CpalAudioRecorder`
+- `RecordingConfig`
+- `AudioMetrics`
+- `OpenAiCompatibleAsrProvider`
+- `OpenAiCompatibleAsrConfig`
+- `ChatAudioAsrProvider`
+- `ChatAudioAsrConfig`
+- `AppConfig`
+- `PostprocessConfig`
+- `PrivacyConfig`
+- `ProviderPreset`
+- `set_value`
+- `get_config_path`
+- `portable_config_path`
+- `existing_portable_config_path`
+- `init_portable_config`
+- `get_config`
+- `save_config`
+- `stop_recording`
+- `enable_portable_config`
+- `build_tray`
+- `show_settings`
+- `start_dictation_service`
+- `load_hotkey`
+- `run_dictation_processor`
+- `finish_dictation`
+- `show_recording_overlay`
+- `capture_foreground_window`
+- `restore_foreground_window`
+- `WindowsClipboardPasteInserter`
+- `WindowsPasteConfig`
+- `OpenAiChatPostprocessor`
+- `OpenAiChatPostprocessorConfig`
+- `HistoryStore`
+- `HistoryEntry`
+- `Hotkey`
+- `run_hotkey_loop`
+- `DllRegisterServer`
+- `DllGetClassObject`
+- `AudioInput`
+- `Transcript`
+- `ProcessedText`

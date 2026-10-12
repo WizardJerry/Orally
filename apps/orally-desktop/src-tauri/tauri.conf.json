@@ -4,13 +4,17 @@
   "version": "0.1.0",
   "identifier": "dev.orally.app",
   "build": {
-    "frontendDist": "../ui"
+    "beforeDevCommand": "npm run ui:dev",
+    "beforeBuildCommand": "npm run ui:build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
+        "theme": "Dark",
         "title": "Orally Settings",
         "width": 1040,
         "height": 720,
@@ -22,14 +26,17 @@
         "label": "dictation",
         "title": "Orally Dictation",
         "url": "overlay.html",
-        "width": 380,
-        "height": 96,
+        "width": 300,
+        "height": 88,
         "resizable": false,
         "decorations": false,
+        "transparent": true,
+        "shadow": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
-        "focus": false
+        "focus": false,
+        "focusable": false
       }
     ],
     "security": {

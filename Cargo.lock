@@ -2255,6 +2255,7 @@ dependencies = [
  "base64 0.22.1",
  "orally-audio",
  "orally-core",
+ "orally-diagnostics",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2266,16 +2267,18 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "orally-core",
+ "orally-diagnostics",
 ]
 
 [[package]]
 name = "orally-cli"
 version = "0.1.0"
 dependencies = [
- "orally-asr",
  "orally-audio",
  "orally-config",
  "orally-core",
+ "orally-llm",
+ "orally-speech",
  "orally-windows",
 ]
 
@@ -2295,11 +2298,11 @@ version = "0.1.0"
 name = "orally-desktop"
 version = "0.1.0"
 dependencies = [
- "orally-asr",
  "orally-audio",
  "orally-config",
  "orally-core",
- "orally-llm",
+ "orally-diagnostics",
+ "orally-speech",
  "orally-storage",
  "orally-windows",
  "serde",
@@ -2309,13 +2312,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "orally-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "orally-llm"
 version = "0.1.0"
 dependencies = [
  "orally-core",
+ "orally-diagnostics",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "orally-speech"
+version = "0.1.0"
+dependencies = [
+ "orally-asr",
+ "orally-core",
+ "orally-llm",
 ]
 
 [[package]]

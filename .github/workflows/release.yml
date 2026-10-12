@@ -1,0 +1,154 @@
+name: release
+
+on:
+  push:
+    tags: ['v[0-9]*.[0-9]*.[0-9]*']
+
+permissions:
+  contents: read
+
+# Serialize retries of the same version without interrupting publication.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    outputs:
+      tag: ${{ steps.validate.outputs.tag }}
+      commit: ${{ steps.validate.outputs.commit }}
+      version: ${{ steps.package.outputs.version }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate version tag and main ancestry
+        id: validate
+        run: |
+          if ($env:GITHUB_REF_NAME -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            throw 'Release tags must use vMAJOR.MINOR.PATCH, for example v0.1.0.'
+          }
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw 'The tagged commit must belong to main. Merge and push main before pushing the version tag.'
+          }
+          $commit = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the release commit.' }
+          "tag=$env:GITHUB_REF_NAME" >> $env:GITHUB_OUTPUT
+          "commit=$commit" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/orally-desktop/package-lock.json
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
+          rustup default stable-x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain selection failed.' }
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build portable app
+        run: |
+          # Use a fresh directory, never a developer's existing portable settings.
+          $portableDir = Join-Path $env:RUNNER_TEMP "portable-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT/Orally"
+          ./scripts/package-portable.ps1 -OutputDirectory $portableDir
+
+      - name: Test frontend
+        run: npm.cmd --prefix apps/orally-desktop run ui:test
+
+      - name: Test Rust workspace
+        run: cargo test --workspace --locked
+
+      - name: Archive portable app
+        id: package
+        run: |
+          $version = (Get-Content apps/orally-desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $tag = $env:GITHUB_REF_NAME
+          $portableDir = Join-Path $env:RUNNER_TEMP "portable-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT/Orally"
+          $releaseDir = New-Item -ItemType Directory -Force -Path dist/release
+          $fileName = "Orally-$tag-windows-x64-portable.zip"
+          $archivePath = Join-Path $releaseDir.FullName $fileName
+          Compress-Archive -LiteralPath $portableDir -DestinationPath $archivePath -CompressionLevel Optimal
+          $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $fileName" | Set-Content -LiteralPath "$archivePath.sha256" -Encoding utf8NoBOM
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Upload release assets
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64-portable-${{ github.run_attempt }}
+          path: |
+            dist/release/*.zip
+            dist/release/*.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: release
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+          APP_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $existing = gh release view $env:RELEASE_TAG --json isDraft --jq '.isDraft' 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if ($existing -eq 'false') {
+              Write-Host "Release $env:RELEASE_TAG is already published; nothing to change."
+              exit 0
+            }
+          } else {
+            @"
+          Windows x64 portable release $env:RELEASE_TAG from main.
+
+          App version: $env:APP_VERSION
+          Commit: $env:RELEASE_COMMIT
+          Build: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
+
+          Extract the ZIP into a writable directory and run Orally/Orally.exe.
+          Microsoft Edge WebView2 Runtime is required on the destination computer.
+          The ZIP includes default settings, example configuration, and third-party licenses.
+          When upgrading, keep your existing setting.toml and profiles/ instead of overwriting them with defaults.
+          The .sha256 asset contains the ZIP's SHA-256 checksum.
+          "@ | Set-Content -LiteralPath release-notes.md -Encoding utf8NoBOM
+            gh release create $env:RELEASE_TAG --draft --verify-tag --title "Orally $env:RELEASE_TAG" --notes-file release-notes.md
+            if ($LASTEXITCODE -ne 0) { throw 'Release creation failed.' }
+          }
+
+          # Resume a failed draft upload; publish only after all assets are present.
+          $assets = @(Get-ChildItem -LiteralPath release -File | Select-Object -ExpandProperty FullName)
+          if ($assets.Count -ne 2) { throw 'Expected a portable ZIP and its checksum.' }
+          gh release upload $env:RELEASE_TAG @assets --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }
+          gh release edit $env:RELEASE_TAG --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }
+          "Published [$env:RELEASE_TAG]($env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/releases/tag/$env:RELEASE_TAG)" >> $env:GITHUB_STEP_SUMMARY

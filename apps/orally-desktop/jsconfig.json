@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./ui/*"]
+    },
+    "jsx": "react-jsx",
+    "moduleResolution": "bundler"
+  },
+  "include": ["ui/**/*.js", "ui/**/*.jsx"]
+}

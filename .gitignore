@@ -22,10 +22,14 @@ apps/*/src-tauri/gen/
 
 # Node/package manager artifacts
 node_modules/
+apps/*/dist/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# Python bytecode caches
+__pycache__/
 
 # OS/editor noise
 .DS_Store

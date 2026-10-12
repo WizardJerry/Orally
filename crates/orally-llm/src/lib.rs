@@ -1,4 +1,5 @@
 use orally_core::{OrallyError, ProcessInput, ProcessedText, TextProcessor};
+use orally_diagnostics::{HttpTrace, Protocol};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -71,34 +72,37 @@ impl TextProcessor for OpenAiChatPostprocessor {
             stream: false,
         };
 
-        let response = self
+        let request = self
             .client
             .post(self.config.endpoint())
             .bearer_auth(&self.config.api_key)
             .json(&request)
-            .send()
+            .build()
+            .map_err(|error| OrallyError::Processing(error.to_string()))?;
+        let mut trace = HttpTrace::new(Protocol::ChatText);
+        let response = trace
+            .send(&self.client, request)
             .map_err(|error| OrallyError::Processing(error.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
-            let body = response
-                .text()
+            let body = trace
+                .error_text(response)
                 .unwrap_or_else(|_| "<failed to read error body>".to_string());
             return Err(OrallyError::Processing(format!(
                 "postprocessor returned HTTP {status}: {body}"
             )));
         }
 
-        let body = response
-            .json::<ChatCompletionResponse>()
+        let body = trace
+            .json::<ChatCompletionResponse>(response)
             .map_err(|error| OrallyError::Processing(error.to_string()))?;
         let text = body
             .choices
             .first()
             .and_then(|choice| choice.message.content.as_deref())
-            .unwrap_or("")
-            .trim()
-            .to_string();
+            .map(sanitize_model_text)
+            .unwrap_or_default();
 
         if text.is_empty() {
             return Err(OrallyError::Processing(
@@ -106,6 +110,7 @@ impl TextProcessor for OpenAiChatPostprocessor {
             ));
         }
 
+        trace.success();
         Ok(ProcessedText {
             text,
             changes: vec!["processed by AI postprocessor".to_string()],
@@ -143,11 +148,11 @@ struct ChatMessageResponse {
 }
 
 pub fn default_system_prompt() -> String {
-    "You are Orally's dictation postprocessor. Clean speech-to-text output while preserving the user's meaning. Return only the final text, with no explanations, markdown, quotes, or labels.".to_string()
+    "You are Orally's AI postprocessor for raw speech-to-text transcripts. Produce text that is ready to paste into the user's active app. Preserve the speaker's meaning, intent, language, names, product terms, URLs, and code identifiers. Remove filler words, repeated fragments, false starts, and self-corrections unless they change the meaning. Add only punctuation and lightweight structure that are clearly implied by the transcript. Do not invent facts, explanations, headings, labels, quotes, or markdown fences. Return only the final text.".to_string()
 }
 
 pub fn default_user_template() -> String {
-    "Locale: {{locale}}\nTranscript:\n{{transcript}}\n\nRewrite the transcript into polished text suitable for direct insertion.".to_string()
+    "Locale: {{locale}}\nTask: cleanup\nTranscript:\n{{transcript}}\n\nClean the transcript into polished text in the original language. Keep normal prose unless the speaker explicitly asks for a list, translation, or another format.".to_string()
 }
 
 pub fn render_user_template(template: &str, input: &ProcessInput) -> String {
@@ -175,16 +180,76 @@ fn validate_config(config: &OpenAiChatPostprocessorConfig) -> Result<(), OrallyE
         ));
     }
 
+    if !matches!(reqwest::Url::parse(config.base_url.trim()), Ok(url) if matches!(url.scheme(), "http" | "https"))
+    {
+        return Err(OrallyError::InvalidInput(
+            "postprocess base URL must be a valid HTTP or HTTPS URL".to_string(),
+        ));
+    }
+
     Ok(())
 }
 
 fn chat_completions_endpoint(base_url: &str) -> String {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    if trimmed.ends_with("/chat/completions") {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}/chat/completions")
+    let trimmed = base_url.trim();
+    let Ok(mut url) = reqwest::Url::parse(trimmed) else {
+        return trimmed.to_string();
+    };
+    let path = url.path().trim_end_matches('/');
+    let base_path = path
+        .strip_suffix("/audio/transcriptions")
+        .or_else(|| path.strip_suffix("/chat/completions"))
+        .unwrap_or(path);
+    url.set_path(&format!("{base_path}/chat/completions"));
+    url.set_fragment(None);
+    url.to_string()
+}
+
+fn sanitize_model_text(text: &str) -> String {
+    let mut cleaned = text.trim();
+
+    if cleaned.starts_with("```") {
+        cleaned = cleaned.trim_start_matches('`').trim();
+        if let Some(rest) = cleaned.strip_prefix("text") {
+            cleaned = rest.trim_start_matches(['\r', '\n', ' ']);
+        }
+        if let Some(rest) = cleaned.strip_prefix("markdown") {
+            cleaned = rest.trim_start_matches(['\r', '\n', ' ']);
+        }
+        cleaned = cleaned.trim_end_matches('`').trim();
     }
+
+    for prefix in [
+        "Final text:",
+        "Final:",
+        "Output:",
+        "Text:",
+        "Result:",
+        "最终文本：",
+        "输出：",
+        "结果：",
+    ] {
+        if let Some(rest) = cleaned.strip_prefix(prefix) {
+            cleaned = rest.trim();
+            break;
+        }
+    }
+
+    let mut unquoted = cleaned;
+    if let Some(value) = unquoted
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    {
+        unquoted = value;
+    }
+    if let Some(value) = unquoted
+        .strip_prefix('“')
+        .and_then(|value| value.strip_suffix('”'))
+    {
+        unquoted = value;
+    }
+
+    unquoted.trim().to_string()
 }
 
 #[cfg(test)]
@@ -221,5 +286,53 @@ mod tests {
             config.endpoint(),
             "https://api.example.com/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn chat_endpoint_accepts_complete_api_routes_and_preserves_gateway_query() {
+        for base_url in [
+            "  https://api.example.com/gateway/v1/audio/transcriptions/?tenant=a%2Fb#ignored  ",
+            "https://api.example.com/gateway/v1/chat/completions/?tenant=a%2Fb#ignored",
+            " https://api.example.com/gateway/v1///?tenant=a%2Fb#ignored ",
+        ] {
+            let config = OpenAiChatPostprocessorConfig::new(base_url, "key", "model");
+            assert_eq!(
+                config.endpoint(),
+                "https://api.example.com/gateway/v1/chat/completions?tenant=a%2Fb"
+            );
+        }
+    }
+
+    #[test]
+    fn postprocess_rejects_invalid_service_urls_during_construction() {
+        for base_url in [
+            "not a URL?secret=fixture-secret",
+            "ftp://api.example.com/v1",
+            "https://",
+        ] {
+            let error = OpenAiChatPostprocessor::new(OpenAiChatPostprocessorConfig::new(
+                base_url,
+                "fixture-key",
+                "model",
+            ))
+            .unwrap_err();
+            assert!(matches!(&error, OrallyError::InvalidInput(_)));
+            assert!(error.to_string().contains("valid HTTP or HTTPS URL"));
+            assert!(!error.to_string().contains("fixture-secret"));
+            assert!(!error.to_string().contains("fixture-key"));
+        }
+    }
+
+    #[test]
+    fn sanitizes_common_model_wrappers() {
+        assert_eq!(
+            sanitize_model_text("Final text: \"hello world\""),
+            "hello world"
+        );
+        assert_eq!(
+            sanitize_model_text("```text\nhello world\n```"),
+            "hello world"
+        );
+        assert_eq!(sanitize_model_text("输出：你好世界"), "你好世界");
     }
 }
