@@ -23,6 +23,7 @@ export const DEFAULT_CONFIG = {
     user_template:
       "Locale: {{locale}}\nTask: cleanup\nTranscript:\n{{transcript}}\n\nClean the transcript into polished text in the original language. Keep normal prose unless the speaker explicitly asks for a list, translation, or another format.",
     fallback_to_builtin: true,
+    thinking_mode: "disabled",
     models: [],
   },
   output: {
@@ -55,8 +56,15 @@ export const DEFAULT_CONFIG = {
 
 const MODEL_FIELDS = [
   "base_url", "model", "api_key", "api_key_env", "system_prompt",
-  "user_template", "fallback_to_builtin",
+  "user_template", "fallback_to_builtin", "thinking_mode",
 ];
+
+export function normalizeThinkingMode(value = "disabled") {
+  if (!["disabled", "enabled", "provider_default"].includes(value)) {
+    throw new Error("思考模式必须是 disabled、enabled 或 provider_default");
+  }
+  return value;
+}
 
 export function clone(value) {
   return structuredClone(value);
@@ -72,6 +80,7 @@ function modelDefaults(postprocess = DEFAULT_CONFIG.postprocess) {
 
 function normalizePostprocess(value = {}) {
   const postprocess = { ...clone(DEFAULT_CONFIG.postprocess), ...clone(value) };
+  postprocess.thinking_mode = normalizeThinkingMode(value.thinking_mode);
   if (postprocess.mode === "ai") postprocess.mode = "llm";
   const models = postprocess.models?.length
     ? postprocess.models
@@ -80,6 +89,7 @@ function normalizePostprocess(value = {}) {
     ...modelDefaults(),
     enabled: true,
     ...model,
+    thinking_mode: normalizeThinkingMode(model.thinking_mode),
     id: model.id || `model-${index + 1}`,
     name: model.name || `后处理模型 ${index + 1}`,
     prompts: (model.prompts ?? []).map((prompt, promptIndex) => ({
@@ -163,8 +173,10 @@ function validatePostprocess(postprocess) {
     mode: "string", base_url: "string", model: "string", api_key: "string?",
     api_key_env: "string", system_prompt: "string", user_template: "string",
     fallback_to_builtin: "boolean",
+    thinking_mode: "string",
   };
   validateFields(postprocess, fields, "后处理配置");
+  normalizeThinkingMode(postprocess.thinking_mode);
   if (postprocess.mode && !["builtin", "llm", "ai"].includes(postprocess.mode)) {
     throw new Error("后处理模式不受支持");
   }
@@ -172,6 +184,7 @@ function validatePostprocess(postprocess) {
   if (!Array.isArray(postprocess.models)) throw new Error("模型节点必须是一个数组");
   for (const model of postprocess.models) {
     validateFields(model, { ...fields, id: "string", name: "string", enabled: "boolean" }, "模型节点");
+    normalizeThinkingMode(model.thinking_mode);
     if (model.prompts === undefined) continue;
     if (!Array.isArray(model.prompts)) throw new Error("Prompt 节点必须是一个数组");
     for (const prompt of model.prompts) {
@@ -357,6 +370,9 @@ export class ConfigEditor {
     for (const profile of config.profiles) {
       profile.asr.protocol = "auto";
       delete profile.asr.prompt;
+      for (const model of profile.postprocess.models) {
+        model.thinking_mode = normalizeThinkingMode(model.thinking_mode);
+      }
       const primary = profile.postprocess.models[0];
       if (primary) {
         for (const key of MODEL_FIELDS) profile.postprocess[key] = clone(primary[key]);

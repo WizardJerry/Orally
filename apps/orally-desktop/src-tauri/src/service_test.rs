@@ -112,33 +112,37 @@ fn connection_model_plan(
     config: &AppConfig,
     model_id: &str,
 ) -> Result<AiPostprocessPlan, OrallyError> {
-    let (base_url, model, api_key, api_key_env) = if config.postprocess.models.is_empty() {
-        (
-            &config.postprocess.base_url,
-            &config.postprocess.model,
-            &config.postprocess.api_key,
-            &config.postprocess.api_key_env,
-        )
-    } else {
-        let selected = config
-            .postprocess
-            .models
-            .iter()
-            .find(|model| model.id == model_id)
-            .ok_or_else(|| OrallyError::InvalidInput("要测试的模型节点不存在。".to_string()))?;
-        (
-            &selected.base_url,
-            &selected.model,
-            &selected.api_key,
-            &selected.api_key_env,
-        )
-    };
+    let (base_url, model, api_key, api_key_env, thinking_mode) =
+        if config.postprocess.models.is_empty() {
+            (
+                &config.postprocess.base_url,
+                &config.postprocess.model,
+                &config.postprocess.api_key,
+                &config.postprocess.api_key_env,
+                config.postprocess.thinking_mode,
+            )
+        } else {
+            let selected = config
+                .postprocess
+                .models
+                .iter()
+                .find(|model| model.id == model_id)
+                .ok_or_else(|| OrallyError::InvalidInput("要测试的模型节点不存在。".to_string()))?;
+            (
+                &selected.base_url,
+                &selected.model,
+                &selected.api_key,
+                &selected.api_key_env,
+                selected.thinking_mode,
+            )
+        };
     Ok(AiPostprocessPlan {
         base_url: base_url.clone(),
         model: model.clone(),
         credential: CredentialSource::new(api_key.clone(), api_key_env.clone()),
         system_prompt: "This is a service connection test. Return only OK.".to_string(),
         user_template: "Return OK.".to_string(),
+        enable_thinking: thinking_mode.enable_thinking(),
         fallback_to_local_basic_cleanup: false,
     })
 }

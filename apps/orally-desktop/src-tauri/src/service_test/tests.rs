@@ -1,5 +1,5 @@
 use super::*;
-use orally_config::{PostprocessModelConfig, PromptNodeConfig};
+use orally_config::{PostprocessModelConfig, PromptNodeConfig, ThinkingMode};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
@@ -96,6 +96,7 @@ fn text_test_uses_unsaved_draft_models_keys_and_prompts_in_order_without_asr() {
     config.privacy.history_enabled = true;
     config.privacy.history_path = Some("an unusable history path\0".to_string());
     let mut first = model("first", &endpoint, "first-draft-key");
+    first.thinking_mode = ThinkingMode::Enabled;
     first.prompts = vec![
         PromptNodeConfig {
             content: "first prompt".to_string(),
@@ -113,7 +114,9 @@ fn text_test_uses_unsaved_draft_models_keys_and_prompts_in_order_without_asr() {
     ];
     let mut disabled = model("disabled", "not a valid endpoint", "unused-key");
     disabled.enabled = false;
-    config.postprocess.models = vec![first, disabled, model("last", &endpoint, "last-draft-key")];
+    let mut last = model("last", &endpoint, "last-draft-key");
+    last.thinking_mode = ThinkingMode::ProviderDefault;
+    config.postprocess.models = vec![first, disabled, last];
 
     let result = check_config_input(&config, Some("raw input".to_string()), None, None);
     let requests = server.join().unwrap();
@@ -129,10 +132,12 @@ fn text_test_uses_unsaved_draft_models_keys_and_prompts_in_order_without_asr() {
         .contains("\"content\":\"base instructions\\n\\nfirst prompt\\n\\nsecond prompt\""));
     assert!(!requests[0].contains("disabled prompt"));
     assert!(requests[0].contains("\"content\":\"raw input\""));
+    assert!(requests[0].contains("\"enable_thinking\":true"));
     assert!(requests[1].contains("authorization: Bearer last-draft-key"));
     assert!(requests[1].contains("\"model\":\"draft-last\""));
     assert!(requests[1].contains("\"content\":\"first output\""));
     assert!(!requests[1].contains("raw input"));
+    assert!(!requests[1].contains("enable_thinking"));
 }
 
 #[test]
@@ -152,7 +157,41 @@ fn connection_tests_selected_disabled_model_without_running_its_prompts() {
     assert!(requests[0].contains("authorization: Bearer selected-draft-key"));
     assert!(requests[0].contains("\"model\":\"draft-selected\""));
     assert!(requests[0].contains("Return only OK"));
+    assert!(requests[0].contains("\"enable_thinking\":false"));
     assert!(!requests[0].contains("do not use these custom instructions"));
+}
+
+#[test]
+fn connection_tests_honor_legacy_and_selected_model_thinking_modes() {
+    for mode in [
+        ThinkingMode::Disabled,
+        ThinkingMode::Enabled,
+        ThinkingMode::ProviderDefault,
+    ] {
+        for legacy in [true, false] {
+            let (endpoint, server) = serve(vec![("200 OK", completion("OK"))]);
+            let mut config = AppConfig::default();
+            if legacy {
+                config.postprocess.base_url = endpoint;
+                config.postprocess.api_key = Some("test-key".to_string());
+                config.postprocess.thinking_mode = mode;
+            } else {
+                let mut selected = model("selected", &endpoint, "test-key");
+                selected.thinking_mode = mode;
+                config.postprocess.models = vec![selected];
+            }
+            let result = check_service_connection(&config, Some("selected"));
+            let requests = server.join().unwrap();
+            assert!(result.is_ok());
+            match mode {
+                ThinkingMode::Disabled => {
+                    assert!(requests[0].contains("\"enable_thinking\":false"))
+                }
+                ThinkingMode::Enabled => assert!(requests[0].contains("\"enable_thinking\":true")),
+                ThinkingMode::ProviderDefault => assert!(!requests[0].contains("enable_thinking")),
+            }
+        }
+    }
 }
 
 #[test]
@@ -247,6 +286,7 @@ fn asr_and_llm_connection_tests_share_address_and_key_but_use_their_own_endpoint
     assert!(requests[0].starts_with("POST /v1/audio/transcriptions "));
     assert!(requests[0].contains("multipart/form-data"));
     assert!(requests[0].contains("speech-model"));
+    assert!(!requests[0].contains("enable_thinking"));
     assert!(requests[1].starts_with("POST /v1/chat/completions "));
     assert!(requests[1].contains("application/json"));
     assert!(requests[1].contains("\"model\":\"draft-llm\""));
@@ -283,6 +323,7 @@ fn asr_connection_negotiates_chat_audio_with_the_unsaved_draft() {
     assert!(!requests[1].contains("\"role\":\"system\""));
     assert!(!requests[1].contains("\"type\":\"text\""));
     assert!(!requests[1].contains("unused-key"));
+    assert!(!requests[1].contains("enable_thinking"));
     assert_eq!(config.asr.protocol, "openai-transcriptions");
 }
 

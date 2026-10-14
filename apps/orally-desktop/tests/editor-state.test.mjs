@@ -39,6 +39,62 @@ test("new configurations start with generic OpenAI-Compatible services and no st
   }
 });
 
+test("missing thinking settings and newly added models default to disabled", () => {
+  const legacy = clone(DEFAULT_CONFIG);
+  delete legacy.postprocess.thinking_mode;
+  const editor = new ConfigEditor(legacy);
+  assert.equal(editor.activeProfile.postprocess.models[0].thinking_mode, "disabled");
+  assert.equal(editor.snapshot().postprocess.thinking_mode, "disabled");
+  const saved = editor.snapshot();
+  delete saved.profiles[0].postprocess.models[0].thinking_mode;
+  assert.equal(new ConfigEditor(saved).activeProfile.postprocess.models[0].thinking_mode, "disabled");
+  editor.activeProfile.postprocess.models[0].thinking_mode = "enabled";
+  assert.equal(editor.addModel().thinking_mode, "disabled", "new models do not inherit thinking from the preceding model");
+  assert.equal(editor.newProfile().postprocess.models[0].thinking_mode, "disabled");
+});
+
+test("thinking modes survive legacy migration, primary synchronization, save and profile import/export", () => {
+  for (const mode of ["disabled", "enabled", "provider_default"]) {
+    const legacy = clone(DEFAULT_CONFIG);
+    legacy.postprocess.thinking_mode = mode;
+    const source = new ConfigEditor(legacy);
+    assert.equal(source.activeProfile.postprocess.models[0].thinking_mode, mode);
+    const later = source.addModel();
+    const laterMode = mode === "disabled" ? "enabled" : "disabled";
+    later.thinking_mode = laterMode;
+    source.moveModel(later.id, -1);
+    const snapshot = source.snapshot();
+    source.markSaved(snapshot);
+    assert.equal(source.dirty, false);
+    assert.equal(snapshot.postprocess.thinking_mode, laterMode);
+    assert.equal(snapshot.profiles[0].postprocess.thinking_mode, laterMode);
+    const restored = new ConfigEditor(JSON.parse(JSON.stringify(snapshot)));
+    assert.deepEqual(restored.activeProfile.postprocess.models.map((model) => model.thinking_mode), [laterMode, mode]);
+    const exported = restored.exportProfile();
+    const imported = new ConfigEditor();
+    imported.import(JSON.parse(JSON.stringify(exported)));
+    assert.equal(imported.snapshot().postprocess.thinking_mode, laterMode);
+    assert.deepEqual(imported.activeProfile.postprocess.models.map((model) => model.thinking_mode), [laterMode, mode]);
+  }
+});
+
+test("invalid thinking modes reject import and load without changing drafts or silently saving", () => {
+  const editor = new ConfigEditor();
+  const before = editor.snapshot();
+  for (const value of ["automatic", "", true, null]) {
+    for (const target of ["legacy", "model"]) {
+      const document = editor.exportProfile();
+      const postprocess = document.profile.postprocess;
+      (target === "legacy" ? postprocess : postprocess.models[0]).thinking_mode = value;
+      assert.throws(() => editor.import(document), /思考模式|thinking_mode/);
+      assert.deepEqual(editor.snapshot(), before);
+      assert.throws(() => new ConfigEditor({ profiles: [document.profile] }), /思考模式/);
+    }
+  }
+  editor.activeProfile.postprocess.models[0].thinking_mode = "invalid";
+  assert.throws(() => editor.snapshot(), /思考模式/);
+});
+
 test("legacy single-model configuration becomes one real editable profile without losing hidden settings", () => {
   const legacy = clone(DEFAULT_CONFIG);
   delete legacy.profiles;

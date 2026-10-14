@@ -13,3 +13,9 @@ orally-llm = { path = "../orally-llm" }
 
 [lib]
 path = "src/lib.rs"
+
+[dev-dependencies]
+orally-audio = { path = "../orally-audio" }
+orally-config = { path = "../orally-config" }
+orally-diagnostics = { path = "../orally-diagnostics" }
+serde_json = "1"

@@ -11,6 +11,7 @@ pub struct OpenAiChatPostprocessorConfig {
     pub model: String,
     pub system_prompt: String,
     pub user_template: String,
+    pub enable_thinking: Option<bool>,
     pub timeout: Duration,
 }
 
@@ -26,6 +27,7 @@ impl OpenAiChatPostprocessorConfig {
             model: model.into(),
             system_prompt: default_system_prompt(),
             user_template: default_user_template(),
+            enable_thinking: Some(false),
             timeout: Duration::from_secs(120),
         }
     }
@@ -70,6 +72,7 @@ impl TextProcessor for OpenAiChatPostprocessor {
             ],
             temperature: 0.1,
             stream: false,
+            enable_thinking: self.config.enable_thinking,
         };
 
         let request = self
@@ -124,6 +127,8 @@ struct ChatCompletionRequest {
     messages: Vec<ChatMessage>,
     temperature: f32,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enable_thinking: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -286,6 +291,7 @@ mod tests {
             config.endpoint(),
             "https://api.example.com/v1/chat/completions"
         );
+        assert_eq!(config.enable_thinking, Some(false));
     }
 
     #[test]

@@ -2337,8 +2337,12 @@ name = "orally-speech"
 version = "0.1.0"
 dependencies = [
  "orally-asr",
+ "orally-audio",
+ "orally-config",
  "orally-core",
+ "orally-diagnostics",
  "orally-llm",
+ "serde_json",
 ]
 
 [[package]]

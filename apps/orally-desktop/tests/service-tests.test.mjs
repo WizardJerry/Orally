@@ -63,6 +63,7 @@ async function fakeFetch(responses, operation) {
 test("ASR connection submits an authenticated half-second WAV and accepts a valid empty silence transcript", async () => {
   const config = configuration();
   config.asr.prompt = "Deprecated recognition instructions must not be sent.";
+  config.asr.thinking_mode = "enabled";
   const before = structuredClone(config);
   await fakeFetch([json({ text: "", language: "zh" })], async (calls) => {
     const result = await testServiceConnection(config);
@@ -75,6 +76,7 @@ test("ASR connection submits an authenticated half-second WAV and accepts a vali
     assert.equal(request.body.get("model"), "speech-model");
     assert.equal(request.body.get("language"), "zh");
     assert.equal(request.body.get("prompt"), null);
+    assert.equal(request.body.get("enable_thinking"), null);
     assert.equal(request.body.get("response_format"), "json");
     const uploaded = await request.body.get("file").arrayBuffer();
     assert.equal(uploaded.byteLength, 16044);
@@ -112,6 +114,57 @@ test("a missing transcription endpoint negotiates WAV Data URL chat using the co
     assert.deepEqual(config, before);
     assert.equal(editor.dirty, true, "testing does not acknowledge an explicit save");
   });
+});
+
+test("LLM connection and text tests send each thinking mode, including legacy defaults", async () => {
+  for (const [mode, expected] of [[undefined, false], ["disabled", false], ["enabled", true], ["provider_default", undefined]]) {
+    for (const legacy of [false, true]) {
+      const config = configuration();
+      const model = legacy ? config.postprocess : config.postprocess.models[0];
+      if (legacy) config.postprocess.models = [];
+      if (mode === undefined) delete model.thinking_mode;
+      else model.thinking_mode = mode;
+      await fakeFetch([completion("OK"), completion("refined text")], async (calls) => {
+        await testServiceConnection(config, legacy ? "" : model.id);
+        const result = await testConfigInput(config, { inputText: "sample text" });
+        assert.equal(result.final_text, "refined text");
+        for (const request of calls) {
+          const body = JSON.parse(request.body);
+          assert.equal(body.enable_thinking, expected);
+          assert.equal(Object.hasOwn(body, "enable_thinking"), expected !== undefined);
+          assert.equal(Object.hasOwn(body, "thinking_mode"), false);
+        }
+      });
+    }
+  }
+});
+
+test("each model in the refinement chain uses its own thinking mode", async () => {
+  const editor = new ConfigEditor(configuration());
+  const first = editor.activeProfile.postprocess.models[0];
+  first.thinking_mode = "disabled";
+  const second = editor.addModel();
+  Object.assign(second, { api_key: "fake-second-key", thinking_mode: "enabled" });
+  const third = editor.addModel();
+  Object.assign(third, { api_key: "fake-third-key", thinking_mode: "provider_default" });
+  await fakeFetch([completion("step one"), completion("step two"), completion("step three")], async (calls) => {
+    assert.equal((await testConfigInput(editor.snapshot(), { inputText: "sample text" })).final_text, "step three");
+    assert.deepEqual(calls.map((request) => JSON.parse(request.body).enable_thinking), [false, true, undefined]);
+    assert.match(JSON.parse(calls[1].body).messages[1].content, /step one/);
+    assert.match(JSON.parse(calls[2].body).messages[1].content, /step two/);
+  });
+});
+
+test("invalid thinking mode is a configuration error before requests or local fallback", async () => {
+  for (const mode of ["automatic", "", null, true]) {
+    const config = configuration();
+    const model = config.postprocess.models[0];
+    model.thinking_mode = mode;
+    await fakeFetch([], async () => {
+      await assert.rejects(testServiceConnection(config, model.id), /思考模式/);
+      await assert.rejects(testConfigInput(config, { inputText: "sample text" }), /思考模式/);
+    });
+  }
 });
 
 test("Data URL shape rejection alone negotiates the standard raw WAV chat shape", async () => {

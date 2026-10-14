@@ -164,3 +164,11 @@ Each model retains the existing failure contract: configured local fallback
 handles request failures, and a later model can continue from that cleaned text.
 Missing credentials and adapter construction failures still stop the operation.
 Raw Transcript and Final Text remain separate in history.
+
+On 2026-10-15 the user requested a per-model thinking setting, disabled by
+default. Post-processing profiles and model nodes store `thinking_mode` as
+`disabled`, `enabled`, or `provider_default`. Missing fields in old profiles
+default to `disabled`. Disabled/enabled send `enable_thinking: false/true` in
+the Chat Completions request; provider default omits the parameter for services
+that do not support it. The model editor, service tests, desktop processing,
+and CLI text processing share this behavior. ASR requests are unchanged.

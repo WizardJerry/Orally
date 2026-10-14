@@ -166,6 +166,7 @@ pub struct AiPostprocessPlan {
     pub credential: CredentialSource,
     pub system_prompt: String,
     pub user_template: String,
+    pub enable_thinking: Option<bool>,
     pub fallback_to_local_basic_cleanup: bool,
 }
 
@@ -489,6 +490,7 @@ fn build_ai_processor(
         OpenAiChatPostprocessorConfig::new(plan.base_url.clone(), api_key, plan.model.clone());
     config.system_prompt = plan.system_prompt.clone();
     config.user_template = plan.user_template.clone();
+    config.enable_thinking = plan.enable_thinking;
     config.timeout = request_timeout;
     OpenAiChatPostprocessor::new(config)
 }
@@ -755,6 +757,7 @@ mod tests {
                     credential,
                     system_prompt: "Preserve the meaning".to_string(),
                     user_template: "{{transcript}}".to_string(),
+                    enable_thinking: Some(false),
                     fallback_to_local_basic_cleanup: false,
                 }),
                 locale: "en-US".to_string(),
@@ -1035,6 +1038,7 @@ mod tests {
                 credential: CredentialSource::new(None, ""),
                 system_prompt: "system".to_string(),
                 user_template: "{{transcript}}".to_string(),
+                enable_thinking: Some(false),
                 fallback_to_local_basic_cleanup: true,
             }]),
             "zh-CN",
@@ -1183,6 +1187,7 @@ mod tests {
             credential: CredentialSource::new(Some("test-key".to_string()), ""),
             system_prompt: system_prompt.to_string(),
             user_template: "{{locale}}: {{transcript}}".to_string(),
+            enable_thinking: Some(false),
             fallback_to_local_basic_cleanup: false,
         })
         .collect();
@@ -1207,6 +1212,43 @@ mod tests {
         assert!(requests[1].contains("\"content\":\"second instructions\""));
         assert!(requests[1].contains("\"content\":\"zh-CN: first output\""));
         assert!(!requests[1].contains("raw speech"));
+        assert!(requests
+            .iter()
+            .all(|request| request.contains("\"enable_thinking\":false")));
+    }
+
+    #[test]
+    fn refinement_thinking_modes_reach_the_real_http_request() {
+        for enable_thinking in [Some(false), Some(true), None] {
+            let (base_url, server) = serve_recognition_responses(vec![
+                "{\"choices\":[{\"message\":{\"content\":\"final text\"}}]}".to_string(),
+            ]);
+            let plan = AiPostprocessPlan {
+                base_url,
+                model: "fixture-model".to_string(),
+                credential: CredentialSource::new(Some("fixture-key".to_string()), ""),
+                system_prompt: "Preserve meaning.".to_string(),
+                user_template: "{{locale}}: {{transcript}}".to_string(),
+                enable_thinking,
+                fallback_to_local_basic_cleanup: false,
+            };
+            let result = refine_transcript(
+                RefinementPlan::AiPostprocessing(plan),
+                transcript("raw speech"),
+                "zh-CN",
+                Duration::from_secs(5),
+            );
+            let requests = server.join().unwrap();
+            assert_eq!(result.unwrap().final_text, "final text");
+            assert_eq!(requests.len(), 1);
+            let body: serde_json::Value =
+                serde_json::from_str(requests[0].split_once("\r\n\r\n").unwrap().1).unwrap();
+            match enable_thinking {
+                Some(expected) => assert_eq!(body["enable_thinking"], expected),
+                None => assert!(body.get("enable_thinking").is_none()),
+            }
+            assert_eq!(body["messages"][1]["content"], "zh-CN: raw speech");
+        }
     }
 
     #[test]
@@ -1217,6 +1259,7 @@ mod tests {
             credential: CredentialSource::new(None, ""),
             system_prompt: "system".to_string(),
             user_template: "{{transcript}}".to_string(),
+            enable_thinking: Some(false),
             fallback_to_local_basic_cleanup: true,
         };
         let processor = SpeechProcessor::with_adapters(
@@ -1244,6 +1287,7 @@ mod tests {
             credential: CredentialSource::new(None, ""),
             system_prompt: "system".to_string(),
             user_template: "{{transcript}}".to_string(),
+            enable_thinking: Some(false),
             fallback_to_local_basic_cleanup: true,
         };
         let processor = SpeechProcessor::with_adapters(
@@ -1274,6 +1318,7 @@ mod tests {
             credential: CredentialSource::new(Some("test-key".to_string()), ""),
             system_prompt: "system".to_string(),
             user_template: "{{transcript}}".to_string(),
+            enable_thinking: Some(false),
             fallback_to_local_basic_cleanup: true,
         };
         let processor = SpeechProcessor::with_adapters(

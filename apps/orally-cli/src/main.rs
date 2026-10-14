@@ -458,6 +458,7 @@ fn run_ai_process(
         .user_template
         .clone()
         .unwrap_or_else(|| process_task_user_template(options.task, options.target_language()));
+    llm_config.enable_thinking = config.postprocess.thinking_mode.enable_thinking();
 
     if options.show_prompt {
         println!("System prompt:\n{}\n", llm_config.system_prompt);

@@ -1,3 +1,5 @@
+import { normalizeThinkingMode } from "./editor-state.js";
+
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_AUDIO_BYTES = 15 * 1024 * 1024;
 const MAX_TEXT_LENGTH = 100_000;
@@ -69,6 +71,11 @@ function endpoint(baseUrl, path) {
   url.pathname = `${basePath}${path}`;
   url.hash = "";
   return url.toString();
+}
+
+function validateModel(model) {
+  validateService(model, "模型服务");
+  normalizeThinkingMode(model.thinking_mode);
 }
 
 class ServiceHttpError extends Error {
@@ -226,8 +233,10 @@ function sanitizeModelText(value) {
 }
 
 async function chat(model, messages, signal) {
+  const thinkingMode = normalizeThinkingMode(model.thinking_mode);
   const data = await requestJson(model, "/chat/completions", {
     model: model.model, messages, temperature: 0.1, stream: false,
+    ...(thinkingMode === "provider_default" ? {} : { enable_thinking: thinkingMode === "enabled" }),
   }, { label: "模型服务", signal });
   const content = data.choices?.[0]?.message?.content;
   const text = typeof content === "string" ? sanitizeModelText(content) : "";
@@ -259,7 +268,7 @@ async function refine(config, rawText, signal) {
   for (const model of models) {
     checkCancelled(signal);
     // Configuration errors do not use runtime fallback; only a failed request does.
-    validateService(model, "模型服务");
+    validateModel(model);
     try {
       text = await chat(model, [
         { role: "system", content: composedPrompt(model) },
@@ -287,7 +296,7 @@ export async function testServiceConnection(config, modelId = null, { signal = n
       ? config.postprocess.models.find((item) => item.id === modelId)
       : modelId === "" ? config.postprocess : null;
     if (!model) throw new Error("要测试的模型节点不存在");
-    validateService(model, "模型服务");
+    validateModel(model);
     await chat(model, [
       { role: "system", content: "This is a service connection test. Return only OK." },
       { role: "user", content: "Return OK." },

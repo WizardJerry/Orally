@@ -100,6 +100,27 @@ impl Default for AsrConfig {
     }
 }
 
+/// Provider reasoning behavior for AI Post-processing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingMode {
+    #[default]
+    Disabled,
+    Enabled,
+    ProviderDefault,
+}
+
+impl ThinkingMode {
+    /// `None` leaves the provider's behavior unspecified in the request.
+    pub fn enable_thinking(self) -> Option<bool> {
+        match self {
+            Self::Disabled => Some(false),
+            Self::Enabled => Some(true),
+            Self::ProviderDefault => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostprocessConfig {
     pub mode: String,
@@ -110,6 +131,8 @@ pub struct PostprocessConfig {
     pub api_key_env: String,
     pub system_prompt: String,
     pub user_template: String,
+    #[serde(default)]
+    pub thinking_mode: ThinkingMode,
     #[serde(default = "default_postprocess_fallback_to_builtin")]
     pub fallback_to_builtin: bool,
     #[serde(default)]
@@ -127,6 +150,7 @@ impl Default for PostprocessConfig {
             system_prompt: "You are Orally's AI postprocessor for raw speech-to-text transcripts. Produce text that is ready to paste into the user's active app. Preserve the speaker's meaning, intent, language, names, product terms, URLs, and code identifiers. Remove filler words, repeated fragments, false starts, and self-corrections unless they change the meaning. Add only punctuation and lightweight structure that are clearly implied by the transcript. Do not invent facts, explanations, headings, labels, quotes, or markdown fences. Return only the final text.".to_string(),
             user_template: "Locale: {{locale}}\nTask: cleanup\nTranscript:\n{{transcript}}\n\nClean the transcript into polished text in the original language. Keep normal prose unless the speaker explicitly asks for a list, translation, or another format.".to_string(),
             fallback_to_builtin: true,
+            thinking_mode: ThinkingMode::default(),
             models: Vec::new(),
         }
     }
@@ -144,6 +168,8 @@ pub struct PostprocessModelConfig {
     pub api_key_env: String,
     pub system_prompt: String,
     pub user_template: String,
+    #[serde(default)]
+    pub thinking_mode: ThinkingMode,
     pub fallback_to_builtin: bool,
     pub prompts: Vec<PromptNodeConfig>,
 }
@@ -161,6 +187,7 @@ impl Default for PostprocessModelConfig {
             api_key_env: config.api_key_env,
             system_prompt: config.system_prompt,
             user_template: config.user_template,
+            thinking_mode: config.thinking_mode,
             fallback_to_builtin: config.fallback_to_builtin,
             prompts: Vec::new(),
         }
@@ -601,6 +628,19 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<(), C
         "postprocess.api_key_env" => config.postprocess.api_key_env = value.to_string(),
         "postprocess.system_prompt" => config.postprocess.system_prompt = value.to_string(),
         "postprocess.user_template" => config.postprocess.user_template = value.to_string(),
+        "postprocess.thinking_mode" => {
+            config.postprocess.thinking_mode = match value {
+                "disabled" => ThinkingMode::Disabled,
+                "enabled" => ThinkingMode::Enabled,
+                "provider_default" => ThinkingMode::ProviderDefault,
+                _ => {
+                    return Err(ConfigError::InvalidValue {
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    })
+                }
+            }
+        }
         "postprocess.fallback_to_builtin" => {
             config.postprocess.fallback_to_builtin = parse_bool(key, value)?
         }
@@ -648,6 +688,7 @@ pub fn set_value(config: &mut AppConfig, key: &str, value: &str) -> Result<(), C
                 "postprocess.user_template" => {
                     model.user_template = postprocess.user_template.clone()
                 }
+                "postprocess.thinking_mode" => model.thinking_mode = postprocess.thinking_mode,
                 "postprocess.fallback_to_builtin" => {
                     model.fallback_to_builtin = postprocess.fallback_to_builtin
                 }
@@ -1009,6 +1050,7 @@ mod tests {
             api_key_env: "TEST_LLM_KEY".to_string(),
             system_prompt: "Preserve meaning.".to_string(),
             user_template: "Locale: {{locale}}\n{{transcript}}".to_string(),
+            thinking_mode: ThinkingMode::Enabled,
             fallback_to_builtin: false,
             prompts: vec![
                 PromptNodeConfig {
@@ -1070,6 +1112,58 @@ mod tests {
         assert_eq!(model.model, OPENAI_COMPAT_POSTPROCESS_MODEL);
         assert!(model.prompts.is_empty());
         assert!(prompt.enabled);
+    }
+
+    #[test]
+    fn old_configuration_explicitly_disables_thinking_on_next_save() {
+        let config = AppConfig::default();
+        let old_config = to_toml(&config)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.starts_with("thinking_mode ="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let restored = from_toml(&old_config).unwrap();
+        let saved: toml::Value = toml::from_str(&to_toml(&restored).unwrap()).unwrap();
+        assert_eq!(
+            saved["postprocess"]
+                .get("thinking_mode")
+                .and_then(toml::Value::as_str),
+            Some("disabled")
+        );
+        let old_model: PostprocessModelConfig = toml::from_str("id = 'cleanup'").unwrap();
+        let saved: toml::Value = toml::from_str(&toml::to_string(&old_model).unwrap()).unwrap();
+        assert_eq!(
+            saved.get("thinking_mode").and_then(toml::Value::as_str),
+            Some("disabled")
+        );
+    }
+
+    #[test]
+    fn thinking_modes_round_trip_and_map_to_explicit_or_omitted_request_flags() {
+        for (mode, name, flag) in [
+            (ThinkingMode::Disabled, "disabled", Some(false)),
+            (ThinkingMode::Enabled, "enabled", Some(true)),
+            (ThinkingMode::ProviderDefault, "provider_default", None),
+        ] {
+            let mut config = AppConfig::default();
+            config.postprocess.thinking_mode = mode;
+            config.postprocess.models = vec![PostprocessModelConfig {
+                thinking_mode: mode,
+                ..PostprocessModelConfig::default()
+            }];
+            let text = to_toml(&config).unwrap();
+            assert!(text.contains(&format!("thinking_mode = \"{name}\"")));
+            assert_eq!(from_toml(&text).unwrap(), config);
+            assert_eq!(mode.enable_thinking(), flag);
+            set_value(&mut config, "postprocess.thinking_mode", name).unwrap();
+            assert_eq!(config.postprocess.thinking_mode, mode);
+        }
+        let mut config = AppConfig::default();
+        let before = config.clone();
+        assert!(set_value(&mut config, "postprocess.thinking_mode", "sometimes").is_err());
+        assert_eq!(config, before);
+        assert!(toml::from_str::<PostprocessModelConfig>("thinking_mode = 'sometimes'").is_err());
     }
 
     #[test]
@@ -1196,6 +1290,7 @@ mod tests {
             ("postprocess.api_key_env", "NEW_KEY_ENV"),
             ("postprocess.system_prompt", "New instructions."),
             ("postprocess.user_template", "New: {{transcript}}"),
+            ("postprocess.thinking_mode", "provider_default"),
             ("postprocess.fallback_to_builtin", "false"),
         ] {
             set_value(&mut config, key, value).unwrap();
@@ -1211,6 +1306,8 @@ mod tests {
         assert_eq!(primary.api_key_env, config.postprocess.api_key_env);
         assert_eq!(primary.system_prompt, config.postprocess.system_prompt);
         assert_eq!(primary.user_template, config.postprocess.user_template);
+        assert_eq!(primary.thinking_mode, ThinkingMode::ProviderDefault);
+        assert_eq!(primary.thinking_mode, config.postprocess.thinking_mode);
         assert_eq!(
             primary.fallback_to_builtin,
             config.postprocess.fallback_to_builtin

@@ -119,6 +119,18 @@ function ModelNode({ controller, model, index, total, disabled }) {
       <div className="space-y-5 border-t p-5">
         <ServiceFields prefix={model.id} service={model} onChange={change} disabled={disabled} />
         <div className="space-y-2">
+          <Label htmlFor={`${model.id}-thinking-mode`}>思考模式</Label>
+          <Select value={model.thinking_mode} disabled={disabled} onValueChange={(value) => change("thinking_mode", value)}>
+            <SelectTrigger id={`${model.id}-thinking-mode`} className="w-56" aria-describedby={`${model.id}-thinking-help`}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="disabled">关闭（默认）</SelectItem>
+              <SelectItem value="enabled">开启</SelectItem>
+              <SelectItem value="provider_default">跟随服务默认</SelectItem>
+            </SelectContent>
+          </Select>
+          <p id={`${model.id}-thinking-help`} className="text-sm text-muted-foreground">关闭可减少等待；不支持此参数的服务可选择跟随服务默认</p>
+        </div>
+        <div className="space-y-2">
           <Label htmlFor={`${model.id}-prompt`}>Prompt</Label>
           <Textarea id={`${model.id}-prompt`} value={model.system_prompt} onChange={(event) => change("system_prompt", event.target.value)}
             rows={4} className="min-h-28 resize-y leading-6" placeholder="输入模型的提示词…" disabled={disabled} />

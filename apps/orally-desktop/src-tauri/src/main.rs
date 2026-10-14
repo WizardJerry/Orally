@@ -464,6 +464,7 @@ fn build_refinement_plan(config: &AppConfig) -> RefinementPlan {
                 ),
                 system_prompt: config.postprocess.system_prompt.clone(),
                 user_template: config.postprocess.user_template.clone(),
+                enable_thinking: config.postprocess.thinking_mode.enable_thinking(),
                 fallback_to_local_basic_cleanup: config.postprocess.fallback_to_builtin,
             })
         } else {
@@ -482,6 +483,7 @@ fn build_refinement_plan(config: &AppConfig) -> RefinementPlan {
                         ),
                         system_prompt: model.composed_system_prompt(),
                         user_template: model.user_template.clone(),
+                        enable_thinking: model.thinking_mode.enable_thinking(),
                         fallback_to_local_basic_cleanup: model.fallback_to_builtin,
                     })
                     .collect(),
@@ -923,6 +925,7 @@ mod tests {
 
         assert_eq!(plan.model, "legacy-model");
         assert_eq!(plan.system_prompt, "legacy instructions");
+        assert_eq!(plan.enable_thinking, Some(false));
         assert!(!plan.fallback_to_local_basic_cleanup);
     }
 
@@ -938,6 +941,7 @@ mod tests {
                 api_key_env: "FIRST_KEY".to_string(),
                 system_prompt: "base instructions".to_string(),
                 user_template: "first: {{transcript}}".to_string(),
+                thinking_mode: orally_config::ThinkingMode::Enabled,
                 fallback_to_builtin: false,
                 prompts: vec![
                     PromptNodeConfig {
@@ -964,6 +968,7 @@ mod tests {
             PostprocessModelConfig {
                 model: "last-model".to_string(),
                 system_prompt: "last instructions".to_string(),
+                thinking_mode: orally_config::ThinkingMode::ProviderDefault,
                 ..PostprocessModelConfig::default()
             },
         ];
@@ -984,9 +989,11 @@ mod tests {
             "base instructions\n\nfirst prompt\n\nsecond prompt"
         );
         assert_eq!(plans[0].user_template, "first: {{transcript}}");
+        assert_eq!(plans[0].enable_thinking, Some(true));
         assert!(!plans[0].fallback_to_local_basic_cleanup);
         assert_eq!(plans[1].model, "last-model");
         assert_eq!(plans[1].system_prompt, "last instructions");
+        assert_eq!(plans[1].enable_thinking, None);
     }
 
     #[test]
