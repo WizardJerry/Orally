@@ -10,6 +10,7 @@ rust-version.workspace = true
 orally-diagnostics = { path = "../orally-diagnostics" }
 cpal = "0.17.3"
 orally-core = { path = "../orally-core" }
+rubato = "0.16.2"
 
 [lib]
 path = "src/lib.rs"

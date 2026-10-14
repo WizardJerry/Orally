@@ -1,6 +1,7 @@
 const MAX_DURATION_MS = 120_000;
 const MAX_WAV_BYTES = 15 * 1024 * 1024;
 const WAV_HEADER_BYTES = 44;
+const UPLOAD_SAMPLE_RATE = 16_000;
 
 function recordingError(message) {
   const error = new Error(message);
@@ -59,9 +60,49 @@ function encodeWav(chunks, sampleCount, sampleRate) {
   return bytes;
 }
 
+async function prepareWav(chunks, sampleCount, sampleRate, cancelled, checkCancelled) {
+  checkCancelled();
+  if (sampleRate <= UPLOAD_SAMPLE_RATE) return encodeWav(chunks, sampleCount, sampleRate);
+  const OfflineContext = globalThis.OfflineAudioContext ?? globalThis.webkitOfflineAudioContext;
+  if (!OfflineContext) throw recordingError("当前浏览器不支持录音音频转换，请使用支持 Web Audio 的浏览器。");
+  try {
+    let wav = encodeWav(chunks, sampleCount, sampleRate);
+    let rate = sampleRate;
+    let decoded;
+    // decodeAudioData resamples to the context rate with native anti-aliasing.
+    // Playing a source-rate AudioBuffer in a lower-rate context can alias.
+    // Keep each conversion ratio at most 3:1: browser native filtering is less
+    // effective for a single large reduction such as 96 kHz directly to 16 kHz.
+    // Capture is already closed. Decoding cannot be aborted, so cancellation
+    // discards its result and any late rejection.
+    while (rate > UPLOAD_SAMPLE_RATE) {
+      checkCancelled();
+      const nextRate = rate > UPLOAD_SAMPLE_RATE * 3 ? Math.ceil(rate / 2) : UPLOAD_SAMPLE_RATE;
+      const decoder = new OfflineContext(1, 1, nextRate);
+      decoded = await Promise.race([decoder.decodeAudioData(wav.buffer), cancelled]);
+      checkCancelled();
+      if (decoded.sampleRate !== nextRate || decoded.numberOfChannels !== 1 || !decoded.length) {
+        throw new Error("Unexpected converted audio format");
+      }
+      rate = nextRate;
+      if (rate > UPLOAD_SAMPLE_RATE) wav = encodeWav([decoded.getChannelData(0)], decoded.length, rate);
+    }
+    // Native decoders round at every stage. Match the original duration within
+    // one final frame by trimming or zero-padding only the rounded tail.
+    const frames = Math.max(1, Math.floor(sampleCount * UPLOAD_SAMPLE_RATE / sampleRate));
+    const samples = decoded.getChannelData(0);
+    const output = samples.length === frames ? samples : new Float32Array(frames);
+    if (output !== samples) output.set(samples.subarray(0, frames));
+    return encodeWav([output], frames, UPLOAD_SAMPLE_RATE);
+  } catch (error) {
+    if (error?.code === "orally-recording") throw error;
+    throw recordingError("录音音频转换失败，请重试录音或更换浏览器。");
+  }
+}
+
 /**
- * Capture an actual microphone as mono PCM16 WAV, keeping the device's sample
- * rate. At a limit the microphone is released and stop() retrieves the clip.
+ * Capture an actual microphone as mono PCM16 WAV. stop() downsamples rates above
+ * 16 kHz after releasing capture; limits still bound the original recording.
  */
 export async function startBrowserRecording({ signal = null, maxDurationMs = MAX_DURATION_MS, onLimit = null } = {}) {
   if (!Number.isFinite(maxDurationMs) || maxDurationMs <= 0) throw recordingError("录音时长需要大于 0");
@@ -86,8 +127,8 @@ export async function startBrowserRecording({ signal = null, maxDurationMs = MAX
   let sampleCount = 0;
   let sampleRate = 0;
   let stopPromise = null;
-  let abortStart;
-  const aborted = new Promise((_resolve, reject) => { abortStart = reject; });
+  let rejectCancelled;
+  const aborted = new Promise((_resolve, reject) => { rejectCancelled = reject; });
   // The same signal remains useful after the start promise has settled.
   aborted.catch(() => {});
 
@@ -117,6 +158,7 @@ export async function startBrowserRecording({ signal = null, maxDurationMs = MAX
 
   function cancel() {
     state = "cancelled";
+    rejectCancelled(recordingError("录音已取消"));
     chunks = [];
     sampleCount = 0;
     stopPromise = null;
@@ -125,7 +167,6 @@ export async function startBrowserRecording({ signal = null, maxDurationMs = MAX
   }
 
   function abort() {
-    abortStart(recordingError("录音已取消"));
     void cancel();
   }
 
@@ -139,11 +180,12 @@ export async function startBrowserRecording({ signal = null, maxDurationMs = MAX
         await release();
         if (state === "cancelled") throw recordingError("录音已取消");
         if (!sampleCount) throw recordingError("未采集到录音音频，请确认麦克风可用并录制一段语音后重试。");
-        const audioBytes = encodeWav(chunks, sampleCount, sampleRate);
-        chunks = [];
+        const audioBytes = await prepareWav(chunks, sampleCount, sampleRate, aborted, checkCancelled);
+        if (state === "cancelled") throw recordingError("录音已取消");
         state = "completed";
         return { audioBytes, audioName: "microphone-test.wav" };
       } finally {
+        chunks = [];
         signal?.removeEventListener("abort", abort);
       }
     })();

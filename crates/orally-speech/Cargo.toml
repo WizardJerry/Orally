@@ -15,6 +15,7 @@ orally-llm = { path = "../orally-llm" }
 path = "src/lib.rs"
 
 [dev-dependencies]
+base64 = "0.22"
 orally-audio = { path = "../orally-audio" }
 orally-config = { path = "../orally-config" }
 orally-diagnostics = { path = "../orally-diagnostics" }

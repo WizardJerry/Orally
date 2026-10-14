@@ -1,6 +1,8 @@
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
-use orally_audio::{decode_wav_pcm16, encode_wav_pcm16, split_pcm16_audio};
+use orally_audio::{
+    decode_wav_pcm16, encode_wav_pcm16, prepare_transcription_audio, split_pcm16_audio,
+};
 use orally_core::{AsrProvider, AudioFormat, AudioInput, OrallyError, Transcript};
 use orally_diagnostics::{HttpTrace, Protocol};
 use reqwest::blocking::{multipart, Client};
@@ -559,7 +561,10 @@ fn audio_to_wav_chunks(audio: AudioInput) -> Result<Vec<Vec<u8>>, OrallyError> {
 }
 
 fn pcm16_to_wav_chunks(audio: &AudioInput) -> Result<Vec<Vec<u8>>, OrallyError> {
-    split_pcm16_audio(audio, MAX_TRANSCRIPTION_CHUNK_DURATION)?
+    // Prepare once, before chunking and protocol negotiation. Recording retention
+    // keeps the original audio, while all request formats share these smaller WAVs.
+    let prepared = prepare_transcription_audio(audio)?;
+    split_pcm16_audio(&prepared, MAX_TRANSCRIPTION_CHUNK_DURATION)?
         .iter()
         .map(encode_wav_pcm16)
         .collect()
@@ -659,6 +664,7 @@ mod tests {
     use std::thread;
     use std::time::Instant;
 
+    mod audio_preparation;
     mod early_response;
 
     fn read_request(stream: &mut std::net::TcpStream) -> Vec<u8> {

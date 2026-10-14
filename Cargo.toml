@@ -20,3 +20,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/orally-ai/orally"
 rust-version = "1.78"
+
+# Keep audio DSP fast during desktop development without optimizing unrelated packages.
+[profile.dev.package.orally-audio]
+opt-level = 3

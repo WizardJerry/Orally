@@ -14,8 +14,8 @@ async function flush() {
 }
 
 async function fakeMicrophone(options, operation) {
-  const globals = new Map(["navigator", "AudioContext", "webkitAudioContext"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
-  const fixture = { requests: [], contexts: [], nodes: [], processor: null };
+  const globals = new Map(["navigator", "AudioContext", "webkitAudioContext", "OfflineAudioContext", "webkitOfflineAudioContext"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  const fixture = { requests: [], contexts: [], offlineContexts: [], decodeInputs: [], nodes: [], processor: null };
   fixture.tracks = [0, 1].map(() => ({
     readyState: "live", stops: 0,
     getSettings() { return { channelCount: 2 }; },
@@ -64,6 +64,27 @@ async function fakeMicrophone(options, operation) {
       this.state = "closed";
     }
   }
+  class OfflineAudioContext {
+    constructor(channels, length, sampleRate) {
+      if (options.conversionError) throw options.conversionError;
+      Object.assign(this, { channels, length, sampleRate, destination: {} });
+      fixture.offlineContexts.push(this);
+    }
+    async decodeAudioData(bytes) {
+      fixture.renderInput = decodedWav(new Uint8Array(bytes));
+      fixture.decodeInputs.push({ sampleRate: fixture.renderInput.sampleRate, frames: fixture.renderInput.samples.length });
+      fixture.renderStartedAfterCaptureClosed = fixture.contexts.every((context) => context.state === "closed")
+        && fixture.tracks.every((track) => track.readyState === "ended");
+      await options.renderPromise;
+      if (options.renderError) throw options.renderError;
+      // Stub the browser's native DSP. These tests verify the API contract,
+      // source rate and encoded output; they do not reimplement resampling.
+      const length = Math.max(1, Math.floor(fixture.renderInput.samples.length * this.sampleRate / fixture.renderInput.sampleRate));
+      const samples = new Float32Array(length).fill(options.renderValue ?? 0.5);
+      options.onDecoded?.(this.sampleRate);
+      return { sampleRate: this.sampleRate, numberOfChannels: 1, length, getChannelData: () => samples };
+    }
+  }
   fixture.emit = (...channels) => {
     const samples = channels.map((value) => value instanceof Float32Array ? value : Float32Array.from(value));
     fixture.processor?.onaudioprocess?.({ inputBuffer: {
@@ -80,6 +101,8 @@ async function fakeMicrophone(options, operation) {
   } } });
   Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: options.unsupported ? undefined : AudioContext });
   Object.defineProperty(globalThis, "webkitAudioContext", { configurable: true, value: undefined });
+  Object.defineProperty(globalThis, "OfflineAudioContext", { configurable: true, value: options.noOfflineContext || options.webkitOffline ? undefined : OfflineAudioContext });
+  Object.defineProperty(globalThis, "webkitOfflineAudioContext", { configurable: true, value: options.webkitOffline ? OfflineAudioContext : undefined });
   try { await operation(fixture); } finally {
     for (const [name, descriptor] of globals) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -107,8 +130,8 @@ function decodedWav(bytes) {
   return { sampleRate, view, samples: Array.from({ length: (bytes.length - 44) / 2 }, (_item, index) => view.getInt16(44 + index * 2, true)) };
 }
 
-test("actual captured samples mix to mono PCM16 WAV with valid lengths, clipping and reusable stop", async () => {
-  await fakeMicrophone({}, async (fixture) => {
+test("16 kHz captured samples mix to mono PCM16 WAV without resampling, with clipping and reusable stop", async () => {
+  await fakeMicrophone({ sampleRate: 16000, noOfflineContext: true }, async (fixture) => {
     const session = await startBrowserRecording();
     assert.deepEqual(fixture.requests, [{ audio: { channelCount: { ideal: 1 } }, video: false }]);
     assert.deepEqual(fixture.processorArguments, { size: 4096, inputChannels: 2, outputChannels: 1 });
@@ -125,7 +148,8 @@ test("actual captured samples mix to mono PCM16 WAV with valid lengths, clipping
     assert.equal(result.audioName, "microphone-test.wav");
     assert.ok(result.audioBytes instanceof Uint8Array);
     const decoded = decodedWav(result.audioBytes);
-    assert.equal(decoded.sampleRate, 48000);
+    assert.equal(decoded.sampleRate, 16000);
+    assert.equal(fixture.offlineContexts.length, 0);
     assert.deepEqual(decoded.samples, [-32768, 32767, 0, -16384, 32767, 0, 16384, -8192]);
     assert.equal(result.audioBytes.length, 60);
     assert.ok(fixture.tracks.every((track) => track.stops === 1));
@@ -135,6 +159,121 @@ test("actual captured samples mix to mono PCM16 WAV with valid lengths, clipping
     fixture.emit([1, 1, 1]);
     assert.equal((await session.stop()).audioBytes.length, 60);
   });
+});
+
+test("sample rates below 16 kHz retain the actual rate and samples without an offline context", async () => {
+  await fakeMicrophone({ sampleRate: 8000, noOfflineContext: true }, async (fixture) => {
+    const session = await startBrowserRecording();
+    fixture.emit([0.25, -0.5, 0]);
+    const decoded = decodedWav((await session.stop()).audioBytes);
+    assert.equal(decoded.sampleRate, 8000);
+    assert.deepEqual(decoded.samples, [8192, -16384, 0]);
+    assert.equal(fixture.offlineContexts.length, 0);
+  });
+});
+
+test("higher rates decode original-rate mono WAV at 16 kHz after capture is released", async () => {
+  for (const sampleRate of [48000, 44100, 22050]) {
+    await fakeMicrophone({ sampleRate, renderValue: 0.25, webkitOffline: sampleRate === 22050 }, async (fixture) => {
+      const session = await startBrowserRecording();
+      fixture.emit(new Float32Array(500).fill(0.75), new Float32Array(500).fill(0.25));
+      fixture.emit(new Float32Array(501).fill(0.75), new Float32Array(501).fill(0.25));
+      const pending = session.stop();
+      assert.equal(session.stop(), pending);
+      const result = await pending;
+      const decoded = decodedWav(result.audioBytes);
+      const expectedFrames = Math.floor(1001 * 16000 / sampleRate);
+      const renderer = fixture.offlineContexts[0];
+      assert.equal(fixture.offlineContexts.length, 1);
+      assert.equal(renderer.channels, 1);
+      assert.equal(renderer.sampleRate, 16000);
+      assert.equal(renderer.length, 1, "only the context rate is needed for native decoding");
+      assert.equal(fixture.renderInput.sampleRate, sampleRate);
+      assert.equal(fixture.renderInput.samples.length, 1001);
+      assert.ok(fixture.renderInput.samples.every((sample) => sample === 16384));
+      assert.equal(fixture.renderStartedAfterCaptureClosed, true);
+      assert.equal(decoded.sampleRate, 16000);
+      assert.equal(decoded.samples.length, expectedFrames);
+      assert.ok(decoded.samples.every((sample) => sample === 8192), "encode the native decoder's output");
+      assert.ok(Math.abs(decoded.samples.length / 16000 - 1001 / sampleRate) < 1 / 16000);
+      assert.ok(fixture.nodes.every((node) => node.disconnects === 1));
+      assert.equal(await session.stop(), result);
+    });
+  }
+});
+
+test("conversion failures reject rather than returning original-rate audio after releasing capture", async () => {
+  for (const options of [
+    { noOfflineContext: true },
+    { conversionError: new Error("offline initialization failed") },
+    { renderError: new Error("offline rendering failed") },
+  ]) {
+    await fakeMicrophone(options, async (fixture) => {
+      const session = await startBrowserRecording();
+      fixture.emit([0.5, 0.5, 0.5]);
+      const pending = session.stop();
+      await assert.rejects(pending, /音频转换/);
+      assert.equal(session.stop(), pending);
+      assert.ok(fixture.tracks.every((track) => track.stops === 1));
+      assert.equal(fixture.contexts[0].closeCalls, 1);
+      assert.ok(fixture.nodes.every((node) => node.disconnects === 1));
+    });
+  }
+});
+
+test("large conversion ratios use multiple native stages and correct accumulated frame rounding", async () => {
+  await fakeMicrophone({ sampleRate: 96001 }, async (fixture) => {
+    const session = await startBrowserRecording();
+    fixture.emit(new Float32Array(1003).fill(0.5));
+    const decoded = decodedWav((await session.stop()).audioBytes);
+    assert.deepEqual(fixture.offlineContexts.map((context) => context.sampleRate), [48001, 24001, 16000]);
+    assert.equal(decoded.sampleRate, 16000);
+    assert.equal(decoded.samples.length, Math.floor(1003 * 16000 / 96001));
+    assert.equal(decoded.samples.length, 167, "successive native rounding alone would lose an extra frame");
+    assert.ok(decoded.samples.slice(0, -1).every((sample) => sample === 16384));
+    assert.equal(decoded.samples.at(-1), 0, "only pad the fractional tail lost between stages");
+    assert.ok(Math.abs(decoded.samples.length / 16000 - 1003 / 96001) < 1 / 16000);
+  });
+});
+
+test("cancellation after a native stage prevents starting the next conversion", async () => {
+  const controller = new AbortController();
+  await fakeMicrophone({ sampleRate: 96000, onDecoded: () => controller.abort() }, async (fixture) => {
+    const session = await startBrowserRecording({ signal: controller.signal });
+    fixture.emit(new Float32Array(960).fill(0.5));
+    await assert.rejects(session.stop(), /录音已取消/);
+    assert.deepEqual(fixture.offlineContexts.map((context) => context.sampleRate), [48000]);
+    assert.ok(fixture.tracks.every((track) => track.stops === 1));
+    assert.equal(fixture.contexts[0].closeCalls, 1);
+  });
+});
+
+test("manual cancellation and abort settle a pending conversion and discard late completion or failure", async () => {
+  for (const useSignal of [false, true]) {
+    for (const lateFailure of [false, true]) {
+      const rendering = deferred();
+      await fakeMicrophone({ renderPromise: rendering.promise }, async (fixture) => {
+        const controller = new AbortController();
+        const session = await startBrowserRecording({ signal: controller.signal });
+        fixture.emit([0.5, 0.5, 0.5]);
+        const pending = session.stop();
+        const rejected = assert.rejects(pending, /录音已取消/);
+        await flush();
+        assert.equal(fixture.offlineContexts.length, 1);
+        assert.equal(fixture.renderStartedAfterCaptureClosed, true);
+        if (useSignal) controller.abort();
+        else await session.cancel();
+        await rejected;
+        await assert.rejects(session.stop(), /录音已取消/);
+        if (lateFailure) rendering.reject(new Error("late render failure"));
+        else rendering.resolve();
+        await flush();
+        await assert.rejects(session.stop(), /录音已取消/);
+        assert.ok(fixture.tracks.every((track) => track.stops === 1));
+        assert.ok(fixture.nodes.every((node) => node.disconnects === 1));
+      });
+    }
+  }
 });
 
 test("cancel releases every device and context once, discards captured samples and is idempotent", async () => {
@@ -241,9 +380,12 @@ test("the WAV size cap bounds captured memory and stops high sample rate recordi
     await flush();
     assert.deepEqual(limits, [{ reason: "size" }]);
     const result = await session.stop();
-    assert.equal(result.audioBytes.byteLength, 15 * 1024 * 1024);
+    assert.equal(fixture.decodeInputs[0].frames, maximumSamples, "conversion must not relax the original capture memory limit");
+    const outputSamples = Math.floor(maximumSamples * 16000 / 384000);
+    assert.equal(result.audioBytes.byteLength, 44 + outputSamples * 2);
     const view = new DataView(result.audioBytes.buffer);
-    assert.equal(view.getUint32(40, true), maximumSamples * 2);
+    assert.equal(view.getUint32(24, true), 16000);
+    assert.equal(view.getUint32(40, true), outputSamples * 2);
     assert.equal(view.getInt16(result.audioBytes.length - 2, true), 16384);
     assert.equal(fixture.contexts[0].closeCalls, 1);
   });

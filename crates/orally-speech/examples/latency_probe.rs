@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const FIXED_TEXT: &str = "嗯请把明天下午三点的会议改到四点然后提醒大家提前准备项目进展谢谢";
+// Matches scripts/generate-latency-fixture.ps1; opt-in so other synthetic fixtures remain usable.
+const AUDIO_FIXTURE_TEXT: &str = "今天我们测试语音输入的响应速度。用户说完一段话以后，希望系统尽快把准确的文字输入到当前窗口。第一步检查录音文件的长度和大小，第二步测量语音识别服务的处理时间，第三步测量文字整理服务的响应时间。测试过程中使用固定的公开文本，不包含真实用户的私人信息。我们会分别记录每个请求的开始时间和结束时间，比较不同方案的速度和识别结果。最终目标是让日常输入更加流畅，同时保持原有的意思，正确处理中文标点和常见的技术词汇。";
 
 struct Options {
     directory: PathBuf,
@@ -23,6 +25,7 @@ struct Options {
     timeout: Duration,
     protocol: AsrProtocol,
     text_repetitions: usize,
+    check_fixture: bool,
 }
 
 fn main() {
@@ -48,10 +51,15 @@ fn options() -> Result<Options, &'static str> {
         timeout: Duration::from_secs(120),
         protocol: AsrProtocol::Auto,
         text_repetitions: 1,
+        check_fixture: false,
     };
     while let Some(arg) = args.next() {
         if arg == "--reuse" {
             options.reuse = true;
+            continue;
+        }
+        if arg == "--check-fixture" {
+            options.check_fixture = true;
             continue;
         }
         let value = args.next().ok_or("missing_option_value")?;
@@ -85,6 +93,9 @@ fn options() -> Result<Options, &'static str> {
     }
     if options.text_repetitions == 0 || options.text_repetitions > 30 {
         return Err("text_repetitions_must_be_between_1_and_30");
+    }
+    if options.check_fixture && options.mode == "refine" {
+        return Err("fixture_check_requires_audio");
     }
     Ok(options)
 }
@@ -187,6 +198,7 @@ fn error_class(error: &OrallyError) -> &'static str {
 
 fn requests(directory: &Path, first_id: u64) -> Result<Vec<Value>, &'static str> {
     let mut events = Vec::new();
+    let mut request_sizes = std::collections::BTreeMap::new();
     for entry in std::fs::read_dir(directory).map_err(|_| "trace_read_failed")? {
         let path = entry.map_err(|_| "trace_read_failed")?.path();
         if !path
@@ -202,6 +214,14 @@ fn requests(directory: &Path, first_id: u64) -> Result<Vec<Value>, &'static str>
             let record: Value = serde_json::from_str(line).map_err(|_| "trace_parse_failed")?;
             let event = &record["event"];
             if record["pid"].as_u64() == Some(u64::from(std::process::id()))
+                && event["type"] == "request_started"
+            {
+                request_sizes.insert(
+                    event["request_id"].as_u64().unwrap_or(0),
+                    event["request_bytes"].clone(),
+                );
+            }
+            if record["pid"].as_u64() == Some(u64::from(std::process::id()))
                 && event["type"] == "request_finished"
                 && event["request_id"].as_u64().unwrap_or(0) >= first_id
             {
@@ -214,8 +234,21 @@ fn requests(directory: &Path, first_id: u64) -> Result<Vec<Value>, &'static str>
             }
         }
     }
+    for event in &mut events {
+        event["request_bytes"] = request_sizes
+            .get(&event["id"].as_u64().unwrap_or(0))
+            .cloned()
+            .unwrap_or(Value::Null);
+    }
     events.sort_by_key(|event| event["id"].as_u64().unwrap_or(0));
     Ok(events)
+}
+
+fn normalized_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn run() -> Result<bool, &'static str> {
@@ -254,6 +287,7 @@ fn run() -> Result<bool, &'static str> {
             "fixed_text_chars": FIXED_TEXT.chars().count() * options.text_repetitions,
             "boundary": "processor construction plus audio-to-final-text; excludes recording and insertion",
             "stage_timings": "HTTP attempts including protocol negotiation; local preparation is in other_ms",
+            "check_fixture": options.check_fixture,
         })
     );
 
@@ -315,7 +349,12 @@ fn run() -> Result<bool, &'static str> {
                 .iter()
                 .any(|change| change.contains("AI postprocessor failed"))
         });
-        let success = outcome.is_ok() && !degraded;
+        let fixture_match = options.check_fixture.then(|| {
+            outcome.as_ref().ok().is_some_and(|result| {
+                normalized_text(&result.raw_transcript.text) == normalized_text(AUDIO_FIXTURE_TEXT)
+            })
+        });
+        let success = outcome.is_ok() && !degraded && fixture_match != Some(false);
         let pass = success && elapsed_ms < options.threshold_ms;
         all_pass &= pass;
         measurements.push(elapsed_ms);
@@ -327,6 +366,7 @@ fn run() -> Result<bool, &'static str> {
                 "recognize_http_ms": recognize_http_ms, "refine_http_ms": refine_http_ms,
                 "other_ms": elapsed_ms.saturating_sub(construction_ms + recognize_http_ms + refine_http_ms),
                 "success": success, "degraded_to_local_cleanup": degraded,
+                "asr_fixture_normalized_exact_match": fixture_match,
                 "error_class": outcome.as_ref().err().map(error_class),
                 "raw_chars": outcome.as_ref().ok().map(|result| result.raw_transcript.text.chars().count()),
                 "final_chars": outcome.as_ref().ok().map(|result| result.final_text.chars().count()),
@@ -335,12 +375,18 @@ fn run() -> Result<bool, &'static str> {
         );
     }
     measurements.sort_unstable();
+    let middle = measurements.len() / 2;
+    let median_ms = if measurements.len() % 2 == 0 {
+        (measurements[middle - 1] as f64 + measurements[middle] as f64) / 2.0
+    } else {
+        measurements[middle] as f64
+    };
     println!(
         "{}",
         json!({
             "type": "verdict", "pass": all_pass, "threshold_ms": options.threshold_ms,
             "min_ms": measurements[0], "max_ms": measurements[measurements.len() - 1],
-            "median_ms": measurements[measurements.len() / 2],
+            "median_ms": median_ms,
             "criterion": "every run succeeds without local fallback and elapsed_ms < threshold_ms",
         })
     );

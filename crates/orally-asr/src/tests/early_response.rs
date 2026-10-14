@@ -117,7 +117,10 @@ fn early_http_route_rejection_of_large_audio_reaches_chat() {
         assert_eq!(requests.len(), 2);
         assert!(requests[0].len() < audio.bytes.len());
         assert!(String::from_utf8_lossy(&requests[0]).starts_with("POST /v1/audio/transcriptions "));
-        assert_eq!(data_url_audio(&requests[1]), audio);
+        let uploaded = data_url_audio(&requests[1]);
+        assert_eq!((uploaded.sample_rate_hz, uploaded.channels), (16_000, 1));
+        assert_eq!(uploaded.bytes.len(), 16_000 * 2 * 60);
+        assert!(uploaded.bytes.iter().all(|sample| *sample == 0));
     }
 }
 

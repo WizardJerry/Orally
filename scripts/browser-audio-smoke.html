@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orally native browser audio smoke test</title>
+<style>
+  body { background: #111; color: #eee; font: 16px system-ui; margin: 32px; }
+  h1 { font-size: 25px; }
+  table { border-collapse: collapse; margin: 20px 0; }
+  th, td { padding: 10px 14px; border: 1px solid #555; text-align: right; }
+  .pass { color: #8ee8a5; } .fail { color: #ff9a9a; }
+  pre { white-space: pre-wrap; } button { padding: 10px 20px; font: inherit; }
+</style>
+<h1>Orally · 浏览器原生音频转换验证</h1>
+<p>从仓库根目录启动 localhost 静态服务器后打开此页面。使用合成采集输入、生产录音模块和真实 OfflineAudioContext；无需麦克风，不发送外部请求。</p>
+<p>例如运行 <code>python -m http.server 8765 --bind 127.0.0.1</code>，打开 <code>http://127.0.0.1:8765/scripts/browser-audio-smoke.html</code>。结束后按 Ctrl+C 关闭服务器。</p>
+<p>检查：1 kHz 幅值误差 &lt; 2%，12 kHz 抑制 &gt; 40 dB，时长误差 &lt; 1 个 16 kHz 帧，以及尾部、120 秒限制和取消。</p>
+<button id="run">运行原生采样测试</button>
+<p id="status" role="status">尚未运行</p>
+<table>
+  <thead><tr><th>场景</th><th>输入 Hz</th><th>输出 Hz</th><th>输出帧数</th><th>时长误差 ms</th><th>1 kHz 幅值</th><th>12 kHz 衰减 dB</th><th>尾部 RMS</th><th>转换 ms</th><th>结果</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<pre id="details"></pre>
+<script type="module">
+import { startBrowserRecording } from '../apps/orally-desktop/ui/test-recorder.js';
+
+const ActualOffline = window.OfflineAudioContext ?? window.webkitOfflineAudioContext;
+const originalContext = Object.getOwnPropertyDescriptor(window, 'AudioContext');
+const originalMedia = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
+const originalOffline = Object.getOwnPropertyDescriptor(window, 'OfflineAudioContext');
+let fixture;
+
+// Replace capture only. No real getUserMedia, microphone tracks, or live audio
+// context are used. Offline conversion stays inside the browser's native DSP.
+class CaptureNode {
+  constructor() { this.channelCount = 1; }
+  connect() {}
+  disconnect() {}
+}
+class SyntheticCaptureContext {
+  constructor() {
+    this.sampleRate = fixture.rate;
+    this.state = 'running';
+    this.destination = {};
+    fixture.context = this;
+  }
+  createMediaStreamSource() { return new CaptureNode(); }
+  createScriptProcessor() { fixture.processor = new CaptureNode(); return fixture.processor; }
+  createGain() { const node = new CaptureNode(); node.gain = { value: 1 }; return node; }
+  async close() { this.state = 'closed'; }
+}
+
+function restore(object, key, descriptor) {
+  if (descriptor) Object.defineProperty(object, key, descriptor);
+  else delete object[key];
+}
+
+function signal(rate, seconds, frequency, tailOnly = false) {
+  const count = Math.round(rate * seconds) + (seconds === 120 ? 0 : 37);
+  const values = new Float32Array(count);
+  const from = tailOnly ? Math.max(0, count - Math.round(rate * 0.03)) : 0;
+  for (let index = from; index < count; index++) {
+    values[index] = frequency === 0 ? 0.5 : 0.5 * Math.sin(2 * Math.PI * frequency * index / rate);
+  }
+  return values;
+}
+
+function decodeWav(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const rate = view.getUint32(24, true);
+  const frames = view.getUint32(40, true) / 2;
+  const values = new Float64Array(frames);
+  for (let index = 0; index < frames; index++) values[index] = view.getInt16(44 + index * 2, true) / 32768;
+  return { rate, frames, values, channels: view.getUint16(22, true), bits: view.getUint16(34, true) };
+}
+
+function rms(values, from = 0, to = values.length) {
+  let sum = 0;
+  for (let index = from; index < to; index++) sum += values[index] ** 2;
+  return Math.sqrt(sum / (to - from));
+}
+
+function amplitude(values, rate, frequency) {
+  let real = 0, imaginary = 0;
+  const from = Math.round(rate * 0.03), to = values.length - from;
+  for (let index = from; index < to; index++) {
+    const phase = 2 * Math.PI * frequency * index / rate;
+    real += values[index] * Math.cos(phase);
+    imaginary += values[index] * Math.sin(phase);
+  }
+  return 2 * Math.hypot(real, imaginary) / (to - from);
+}
+
+async function beginCapture(rate, values, abortSignal = null) {
+  fixture = { rate, track: {
+    readyState: 'live', stops: 0,
+    getSettings() { return { channelCount: 1 }; },
+    stop() { this.readyState = 'ended'; this.stops++; },
+  } };
+  const session = await startBrowserRecording({ signal: abortSignal });
+  for (let offset = 0; offset < values.length; offset += 4096) {
+    const part = values.subarray(offset, Math.min(offset + 4096, values.length));
+    fixture.processor.onaudioprocess?.({ inputBuffer: {
+      length: part.length, numberOfChannels: 1, getChannelData() { return part; },
+    } });
+  }
+  return session;
+}
+
+function released() { return fixture.track.stops === 1 && fixture.context.state === 'closed'; }
+
+async function capture(rate, values) {
+  const session = await beginCapture(rate, values);
+  const started = performance.now();
+  const result = await session.stop();
+  return { ...decodeWav(result.audioBytes), ms: performance.now() - started, released: released() };
+}
+
+async function cancellation(useSignal) {
+  let decoding, decodeStarted;
+  const started = new Promise((resolve) => { decodeStarted = resolve; });
+  // Observe the real native decode promise to cancel only after conversion has
+  // started. This wrapper neither fabricates samples nor delays native results.
+  function ObservedOfflineContext(...args) {
+    const context = new ActualOffline(...args);
+    const decode = context.decodeAudioData.bind(context);
+    context.decodeAudioData = (...input) => {
+      decoding = decode(...input);
+      decodeStarted();
+      return decoding;
+    };
+    return context;
+  }
+  Object.defineProperty(window, 'OfflineAudioContext', { configurable: true, value: ObservedOfflineContext });
+  try {
+    const controller = new AbortController();
+    const session = await beginCapture(48000, signal(48000, 1, 1000), controller.signal);
+    const stopped = session.stop().then(() => false, (error) => /录音已取消/.test(error.message));
+    await started;
+    const before = performance.now();
+    if (useSignal) controller.abort();
+    else await session.cancel();
+    const cancelled = await stopped;
+    const cancelMs = performance.now() - before;
+    await decoding.catch(() => {});
+    const rejectsLateStop = await session.stop().then(() => false, (error) => /录音已取消/.test(error.message));
+    return { scenario: useSignal ? 'AbortSignal during native decode' : 'cancel during native decode', preparationMs: cancelMs, pass: cancelled && rejectsLateStop && released(), released: released() };
+  } finally {
+    restore(window, 'OfflineAudioContext', originalOffline);
+  }
+}
+
+function display(row) {
+  const tr = document.createElement('tr');
+  const values = [row.scenario, row.sourceRate, row.targetRate, row.outputFrames, row.durationErrorMs?.toFixed(5), row.passAmplitude?.toFixed(6), row.stopAttenuationDb?.toFixed(2), row.tailRms?.toFixed(6), row.preparationMs.toFixed(2), row.pass ? 'PASS' : 'FAIL'];
+  for (const value of values) {
+    const td = document.createElement('td'); td.textContent = String(value ?? '—'); tr.append(td);
+  }
+  tr.lastChild.className = row.pass ? 'pass' : 'fail';
+  document.querySelector('#rows').append(tr);
+}
+
+async function run() {
+  document.querySelector('#run').disabled = true;
+  const status = document.querySelector('#status');
+  status.textContent = '运行中…';
+  const results = [];
+  const record = (row) => { results.push(row); display(row); };
+  try {
+    if (!ActualOffline) throw new Error('Native OfflineAudioContext unavailable');
+    Object.defineProperty(window, 'AudioContext', { configurable: true, value: SyntheticCaptureContext });
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: {
+      getUserMedia: async () => ({ getTracks: () => [fixture.track], getAudioTracks: () => [fixture.track] }),
+    } });
+    for (const rate of [48000, 44100, 96000]) {
+      const input = signal(rate, 1, 1000), passband = await capture(rate, input);
+      const stopband = await capture(rate, signal(rate, 1, 12000));
+      const tail = await capture(rate, signal(rate, 1, 1000, true));
+      const durationErrorMs = (passband.frames / 16000 - input.length / rate) * 1000;
+      const gain = amplitude(passband.values, 16000, 1000);
+      const attenuation = 20 * Math.log10(rms(stopband.values, 480, stopband.frames - 480) / (0.5 / Math.sqrt(2)));
+      const tailRms = rms(tail.values, tail.frames - 160, tail.frames);
+      const row = { scenario: 'tone + antialias + tail', sourceRate: rate, targetRate: passband.rate, inputFrames: input.length, outputFrames: passband.frames, durationErrorMs, passAmplitude: gain, stopAttenuationDb: attenuation, tailRms, preparationMs: passband.ms, released: passband.released && stopband.released && tail.released };
+      row.pass = passband.rate === 16000 && passband.channels === 1 && passband.bits === 16 && Math.abs(durationErrorMs) < 1000 / 16000 && Math.abs(gain - 0.5) < 0.01 && attenuation < -40 && tailRms > 0.25 && row.released;
+      record(row);
+    }
+    for (const rate of [16000, 8000]) {
+      const input = signal(rate, 1, 1000), output = await capture(rate, input);
+      const row = { scenario: 'no upsampling', sourceRate: rate, targetRate: output.rate, inputFrames: input.length, outputFrames: output.frames, durationErrorMs: (output.frames / output.rate - input.length / rate) * 1000, passAmplitude: amplitude(output.values, rate, 1000), tailRms: rms(output.values, output.frames - Math.round(rate * 0.01)), preparationMs: output.ms, released: output.released };
+      row.pass = output.rate === rate && output.frames === input.length && Math.abs(row.passAmplitude - 0.5) < 0.01 && row.released;
+      record(row);
+    }
+    const longInput = signal(48000, 120, 0), longOutput = await capture(48000, longInput);
+    const row = { scenario: '120 second capture bound', sourceRate: 48000, targetRate: longOutput.rate, inputFrames: longInput.length, outputFrames: longOutput.frames, durationErrorMs: (longOutput.frames / 16000 - 120) * 1000, tailRms: rms(longOutput.values, longOutput.frames - 160), preparationMs: longOutput.ms, released: longOutput.released };
+    row.pass = longOutput.rate === 16000 && longOutput.frames === 1920000 && row.tailRms > 0.45 && row.released;
+    record(row);
+    record(await cancellation(false));
+    record(await cancellation(true));
+    window.probeResult = { browser: navigator.userAgent, nativeOfflineConstructor: ActualOffline.name, productionModule: '../apps/orally-desktop/ui/test-recorder.js', microphoneUsed: false, results, pass: results.every((row) => row.pass) };
+    status.textContent = window.probeResult.pass ? `全部 ${results.length} 个原生浏览器场景通过` : '存在失败项';
+    status.className = window.probeResult.pass ? 'pass' : 'fail';
+  } catch (error) {
+    window.probeResult = { pass: false, error: String(error), results };
+    status.textContent = String(error); status.className = 'fail';
+  } finally {
+    restore(window, 'AudioContext', originalContext);
+    restore(navigator, 'mediaDevices', originalMedia);
+    restore(window, 'OfflineAudioContext', originalOffline);
+    document.querySelector('#details').textContent = JSON.stringify(window.probeResult, null, 2);
+    document.body.dataset.complete = 'true';
+  }
+}
+document.querySelector('#run').addEventListener('click', run);
+</script>
+</html>

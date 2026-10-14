@@ -4,6 +4,9 @@ use orally_core::{AudioFormat, AudioInput, OrallyError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod transcription;
+pub use transcription::prepare_transcription_audio;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordingConfig {
     pub duration: Duration,
